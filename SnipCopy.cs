@@ -503,11 +503,19 @@ namespace SnipCopy
         private static string ApiBaseUrl()
         {
             string value = Environment.GetEnvironmentVariable("SAVEDCODE_API_BASE_URL");
-            if (String.IsNullOrWhiteSpace(value)) return "https://savedcode.com";
-            return value.Trim().TrimEnd('/');
+            if (String.IsNullOrWhiteSpace(value)) return "https://www.savedcode.com";
+            value = value.Trim().TrimEnd('/');
+            if (String.Equals(value, "https://savedcode.com", StringComparison.OrdinalIgnoreCase)) return "https://www.savedcode.com";
+            if (String.Equals(value, "http://savedcode.com", StringComparison.OrdinalIgnoreCase)) return "https://www.savedcode.com";
+            return value;
         }
 
         private static string PostJson(string url, string body)
+        {
+            return PostJson(url, body, 0);
+        }
+
+        private static string PostJson(string url, string body, int redirectCount)
         {
             ServicePointManager.SecurityProtocol = ServicePointManager.SecurityProtocol | (SecurityProtocolType)3072;
             byte[] data = Encoding.UTF8.GetBytes(body);
@@ -516,6 +524,7 @@ namespace SnipCopy
             request.ContentType = "application/json";
             request.Accept = "application/json";
             request.Timeout = 20000;
+            request.AllowAutoRedirect = false;
             request.ContentLength = data.Length;
             using (Stream stream = request.GetRequestStream())
             {
@@ -525,13 +534,29 @@ namespace SnipCopy
             try
             {
                 using (var response = (HttpWebResponse)request.GetResponse())
-                using (var reader = new StreamReader(response.GetResponseStream()))
                 {
-                    return reader.ReadToEnd();
+                    if (IsRedirectStatus(response) && redirectCount < 3)
+                    {
+                        string redirectUrl = ResolveRedirectUrl(url, response.Headers["Location"]);
+                        if (!String.IsNullOrEmpty(redirectUrl)) return PostJson(redirectUrl, body, redirectCount + 1);
+                    }
+
+                    using (var reader = new StreamReader(response.GetResponseStream()))
+                    {
+                        return reader.ReadToEnd();
+                    }
                 }
             }
             catch (WebException ex)
             {
+                var response = ex.Response as HttpWebResponse;
+                if (response != null && IsRedirectStatus(response) && redirectCount < 3)
+                {
+                    string redirectUrl = ResolveRedirectUrl(url, response.Headers["Location"]);
+                    response.Close();
+                    if (!String.IsNullOrEmpty(redirectUrl)) return PostJson(redirectUrl, body, redirectCount + 1);
+                }
+
                 string error = "";
                 if (ex.Response != null)
                 {
@@ -543,6 +568,26 @@ namespace SnipCopy
                 if (String.IsNullOrEmpty(error)) error = ex.Message;
                 throw new ApplicationException(error);
             }
+        }
+
+        private static bool IsRedirectStatus(HttpWebResponse response)
+        {
+            int status = (int)response.StatusCode;
+            return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+        }
+
+        private static string ResolveRedirectUrl(string currentUrl, string location)
+        {
+            if (String.IsNullOrWhiteSpace(location)) return "";
+            Uri redirectUri;
+            if (Uri.TryCreate(location, UriKind.Absolute, out redirectUri)) return redirectUri.ToString();
+
+            Uri currentUri;
+            if (Uri.TryCreate(currentUrl, UriKind.Absolute, out currentUri) && Uri.TryCreate(currentUri, location, out redirectUri))
+            {
+                return redirectUri.ToString();
+            }
+            return "";
         }
 
         private static void SaveSavedCodeRecord(LicenseInfo info)
