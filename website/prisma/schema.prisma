@@ -63,9 +63,11 @@ model Activation {
   licenseId   String
   license     License  @relation(fields: [licenseId], references: [id], onDelete: Cascade)
   email       String
-  machineHash String?
+  machineHash String
   ipHash      String?
   createdAt   DateTime @default(now())
+
+  @@unique([licenseId])
 }
 
 model StripeSubscription {

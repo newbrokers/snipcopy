@@ -9,7 +9,7 @@ export default function TermsPage() {
           licensed yearly and includes the Pro features listed on the pricing page while the license token remains valid.
         </p>
         <h2>License</h2>
-        <p>A Pro license is tied to the purchasing customer email and may be activated on the user&apos;s own devices.</p>
+        <p>A Pro license is tied to the purchasing customer email and may be activated on one device at a time. Contact support if you need to move it to a replacement device.</p>
         <h2>Renewals and cancellation</h2>
         <p>Subscriptions renew yearly through Stripe. If canceled, the current token remains valid until its paid-through expiry.</p>
         <h2>Support</h2>

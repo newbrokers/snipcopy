@@ -19,7 +19,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 
-SAVEDCODE_API_BASE_URL = os.environ.get("SAVEDCODE_API_BASE_URL", "https://savedcode.com").rstrip("/")
+SAVEDCODE_API_BASE_URL = os.environ.get("SAVEDCODE_API_BASE_URL", "https://www.savedcode.com").rstrip("/")
 SAVEDCODE_PUBLIC_KEY_PEM_BASE64 = (
     os.environ.get("SAVEDCODE_PUBLIC_KEY_PEM_BASE64")
     or "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQVVxY1Fqc0MxUXVIcU5jOU9kQm1DRkFheUxGV3cwYU5Ed2o2Q21oUWdKT1U9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo="
@@ -118,6 +118,7 @@ def sync_license(product_slug: str, api_base_url: str = SAVEDCODE_API_BASE_URL) 
         {
             "licenseKey": license_key,
             "product_slug": product_slug,
+            "machineHash": machine_hash(),
         },
     )
     token = response.get("token")

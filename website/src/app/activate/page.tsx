@@ -11,7 +11,7 @@ export default function ActivatePage() {
         <div className="grid">
           <article className="card">
             <h3>Activate</h3>
-            <p>Open the product, choose Pro activation, then paste your license key and purchase email.</p>
+            <p>Open the product, choose Pro activation, then paste your license key and purchase email. The first successful activation locks the license to that device.</p>
           </article>
           <article className="card">
             <h3>Offline use</h3>
@@ -19,7 +19,7 @@ export default function ActivatePage() {
           </article>
           <article className="card">
             <h3>Renewal sync</h3>
-            <p>When a yearly subscription renews, sync from the app or portal to receive a token with the updated expiry.</p>
+            <p>When a yearly subscription renews, sync from the activated app to receive a token with the updated expiry.</p>
           </article>
         </div>
       </section>

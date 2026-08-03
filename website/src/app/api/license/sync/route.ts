@@ -5,8 +5,11 @@ import { getClientIp, json, rateLimit } from "@/lib/http";
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_PRODUCT_SLUG, productSlugSchema } from "@/lib/products";
 
+const DEVICE_LOCKED_MESSAGE = "This license is already activated on another device. Contact support to reset activations.";
+
 const syncSchema = z.object({
   licenseKey: z.string().min(12),
+  machineHash: z.string().min(16).max(128),
   productSlug: productSlugSchema.optional(),
   product_slug: productSlugSchema.optional()
 }).transform((data) => ({
@@ -31,6 +34,14 @@ export async function POST(request: NextRequest) {
   if (license.expiresAt.getTime() < Date.now()) {
     await prisma.license.update({ where: { id: license.id }, data: { status: "expired" } });
     return json({ error: "License expired. Please update billing or contact support." }, { status: 403 });
+  }
+
+  const activation = await prisma.activation.findUnique({ where: { licenseId: license.id } });
+  if (!activation) {
+    return json({ error: "Activate this device before syncing the license." }, { status: 403 });
+  }
+  if (activation.machineHash !== body.data.machineHash) {
+    return json({ error: DEVICE_LOCKED_MESSAGE }, { status: 403 });
   }
 
   const signed = createSignedLicense({

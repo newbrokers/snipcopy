@@ -165,6 +165,8 @@ Resend setup:
 - `GET /api/admin/licenses`
 - `POST /api/billing/portal` requires a verified portal session
 
+Activation and sync requests include a product slug plus the app's machine hash. The first successful activation locks the license to one active device. That same device can reactivate or sync after renewal, but a different device receives a reset-required error until support clears the activation.
+
 ## Offline Token Payload
 
 The signed token contains:

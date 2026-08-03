@@ -420,7 +420,8 @@ namespace SnipCopy
             {
                 string body = "{"
                     + "\"licenseKey\":\"" + JsonEscape(Program.License.Key) + "\","
-                    + "\"product_slug\":\"" + ProductSlug + "\""
+                    + "\"product_slug\":\"" + ProductSlug + "\","
+                    + "\"machineHash\":\"" + MachineHash() + "\""
                     + "}";
                 string json = PostJson(ApiBaseUrl() + "/api/license/sync", body);
                 LicenseInfo info;
