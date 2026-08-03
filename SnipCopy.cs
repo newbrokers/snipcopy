@@ -28,7 +28,13 @@ namespace SnipCopy
         private static DateTime openEditorToastUntilUtc = DateTime.MinValue;
         private static EditorForm editorWindow;
         private static HotkeyWindow hotkeyWindow;
-        private const int HotkeyId = 9182;
+#if SDK_RECORDING
+        private static HotkeyWindow recordHotkeyWindow;
+#endif
+        private const int SnipHotkeyId = 9182;
+#if SDK_RECORDING
+        private const int RecordHotkeyId = 9183;
+#endif
 
         [STAThread]
         static void Main()
@@ -48,6 +54,9 @@ namespace SnipCopy
 
             var menu = new ContextMenuStrip();
             var newItem = menu.Items.Add("New snip    Ctrl+Shift+S");
+#if SDK_RECORDING
+            var recordItem = menu.Items.Add("Record area    Ctrl+Shift+R");
+#endif
             var editItem = menu.Items.Add("Open last in editor");
             historyItem = new ToolStripMenuItem();
             menu.Items.Add(historyItem);
@@ -64,6 +73,9 @@ namespace SnipCopy
             RefreshLicenseMenuText();
 
             newItem.Click += delegate { StartSnip(); };
+#if SDK_RECORDING
+            recordItem.Click += delegate { StartRecordingSelection(); };
+#endif
             editItem.Click += delegate { OpenEditor(LastImage); };
             historyItem.Click += delegate { ShowHistory(); };
             autoEditorItem.CheckedChanged += delegate { OpenEditorAfterSnip = autoEditorItem.Checked; };
@@ -72,22 +84,42 @@ namespace SnipCopy
             TrayIcon.ContextMenuStrip = menu;
             TrayIcon.DoubleClick += delegate { StartSnip(); };
 
-            hotkeyWindow = new HotkeyWindow(HotkeyId);
+            hotkeyWindow = new HotkeyWindow(SnipHotkeyId);
             hotkeyWindow.HotkeyPressed += delegate { StartSnip(); };
             bool registered = NativeMethods.RegisterHotKey(
                 hotkeyWindow.Handle,
-                HotkeyId,
+                SnipHotkeyId,
                 NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT,
                 (uint)Keys.S);
 
+#if SDK_RECORDING
+            recordHotkeyWindow = new HotkeyWindow(RecordHotkeyId);
+            recordHotkeyWindow.HotkeyPressed += delegate { StartRecordingSelection(); };
+            bool recordRegistered = NativeMethods.RegisterHotKey(
+                recordHotkeyWindow.Handle,
+                RecordHotkeyId,
+                NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT,
+                (uint)Keys.R);
+#endif
+
             ShowToast(
                 "SnipCopy is running",
+#if SDK_RECORDING
+                BuildHotkeyMessage(registered, recordRegistered));
+#else
                 registered ? "Press Ctrl+Shift+S or double-click the tray icon." : "Hotkey registration failed. Use the tray icon to snip.");
+#endif
 
             context.ThreadExit += delegate
             {
-                NativeMethods.UnregisterHotKey(hotkeyWindow.Handle, HotkeyId);
+                NativeMethods.UnregisterHotKey(hotkeyWindow.Handle, SnipHotkeyId);
+#if SDK_RECORDING
+                NativeMethods.UnregisterHotKey(recordHotkeyWindow.Handle, RecordHotkeyId);
+#endif
                 hotkeyWindow.Dispose();
+#if SDK_RECORDING
+                recordHotkeyWindow.Dispose();
+#endif
                 TrayIcon.Visible = false;
                 TrayIcon.Dispose();
                 AppIcon.Dispose();
@@ -96,6 +128,16 @@ namespace SnipCopy
 
             Application.Run(context);
         }
+
+#if SDK_RECORDING
+        private static string BuildHotkeyMessage(bool snipRegistered, bool recordRegistered)
+        {
+            if (snipRegistered && recordRegistered) return "Press Ctrl+Shift+S to snip or Ctrl+Shift+R to record.";
+            if (snipRegistered) return "Press Ctrl+Shift+S or double-click the tray icon. Record hotkey failed.";
+            if (recordRegistered) return "Snip hotkey failed. Press Ctrl+Shift+R to record or use the tray menu.";
+            return "Hotkey registration failed. Use the tray menu.";
+        }
+#endif
 
         internal static bool IsPro
         {
@@ -216,6 +258,22 @@ namespace SnipCopy
             }
         }
 
+#if SDK_RECORDING
+        internal static void StartRecordingSelection()
+        {
+            if (CaptureOverlay.IsOpen) return;
+            using (var screenshot = CaptureScreen())
+            {
+                var overlay = new CaptureOverlay(screenshot);
+                if (overlay.ShowDialog() == DialogResult.OK && overlay.SelectedScreenBounds.Width > 0)
+                {
+                    RecordingManager.ShowUnavailable(overlay.SelectedScreenBounds);
+                }
+                if (overlay.CapturedImage != null) overlay.CapturedImage.Dispose();
+            }
+        }
+#endif
+
         internal static Bitmap CaptureScreen()
         {
             Rectangle bounds = SystemInformation.VirtualScreen;
@@ -310,16 +368,18 @@ namespace SnipCopy
 
     internal sealed class HotkeyWindow : NativeWindow, IDisposable
     {
+        private readonly int hotkeyId;
         public event EventHandler HotkeyPressed;
 
         public HotkeyWindow(int id)
         {
+            hotkeyId = id;
             CreateHandle(new CreateParams());
         }
 
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == NativeMethods.WM_HOTKEY && HotkeyPressed != null)
+            if (m.Msg == NativeMethods.WM_HOTKEY && (int)m.WParam == hotkeyId && HotkeyPressed != null)
             {
                 HotkeyPressed(this, EventArgs.Empty);
             }
@@ -331,6 +391,18 @@ namespace SnipCopy
             DestroyHandle();
         }
     }
+
+#if SDK_RECORDING
+    internal static class RecordingManager
+    {
+        internal static void ShowUnavailable(Rectangle region)
+        {
+            string message = "Recording region selected: " + region.Width + " x " + region.Height + "." + Environment.NewLine
+                + "The Windows capture recorder is reserved for the new .NET SDK build so the current image capture stays stable.";
+            MessageBox.Show(message, "SnipCopy Recording", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+#endif
 
     internal sealed class LicenseInfo
     {
@@ -1017,6 +1089,7 @@ namespace SnipCopy
     {
         internal static bool IsOpen;
         internal Bitmap CapturedImage;
+        private Rectangle selectedScreenBounds;
         private readonly Bitmap screenshot;
         private bool selecting;
         private Point start;
@@ -1035,6 +1108,11 @@ namespace SnipCopy
             KeyPreview = true;
             DoubleBuffered = true;
             BackgroundImage = screenshot;
+        }
+
+        internal Rectangle SelectedScreenBounds
+        {
+            get { return selectedScreenBounds; }
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1075,6 +1153,7 @@ namespace SnipCopy
             if (!selecting) return;
             selecting = false;
             selection = Normalize(start, e.Location);
+            selectedScreenBounds = ToScreenBounds(selection);
 
             if (selection.Width < 3 || selection.Height < 3)
             {
@@ -1116,6 +1195,16 @@ namespace SnipCopy
             int w = Math.Abs(a.X - b.X);
             int h = Math.Abs(a.Y - b.Y);
             return new Rectangle(x, y, w, h);
+        }
+
+        private static Rectangle ToScreenBounds(Rectangle clientSelection)
+        {
+            Rectangle virtualScreen = SystemInformation.VirtualScreen;
+            return new Rectangle(
+                virtualScreen.Left + clientSelection.Left,
+                virtualScreen.Top + clientSelection.Top,
+                clientSelection.Width,
+                clientSelection.Height);
         }
     }
 
@@ -1167,6 +1256,12 @@ namespace SnipCopy
             var editPage = new TabPage("Edit");
             editPage.BackColor = Color.FromArgb(245, 247, 250);
             tabs.TabPages.Add(editPage);
+
+#if SDK_RECORDING
+            var recordPage = new TabPage("Record");
+            recordPage.BackColor = Color.FromArgb(245, 247, 250);
+            tabs.TabPages.Add(recordPage);
+#endif
 
             var historyPage = new TabPage("History");
             historyPage.BackColor = Color.FromArgb(245, 247, 250);
@@ -1240,6 +1335,9 @@ namespace SnipCopy
             canvas.MouseUp += CanvasMouseUp;
 
             BuildHistoryTab(historyPage);
+#if SDK_RECORDING
+            BuildRecordTab(recordPage);
+#endif
             BuildSettingsTab(settingsPage);
             RefreshEditorHistory();
             RefreshLicenseState();
@@ -1376,6 +1474,60 @@ namespace SnipCopy
             actions.Controls.Add(MakeHistoryButton("Save As", delegate { SaveHistorySelectedAs(); }));
             actions.Controls.Add(MakeHistoryButton("Delete", delegate { DeleteHistorySelected(); }));
         }
+
+#if SDK_RECORDING
+        private void BuildRecordTab(TabPage page)
+        {
+            var panel = new Panel();
+            panel.Dock = DockStyle.Fill;
+            panel.BackColor = Color.FromArgb(245, 247, 250);
+            panel.Padding = new Padding(21);
+            page.Controls.Add(panel);
+
+            var title = new Label();
+            title.Text = "Region Recording";
+            title.Font = new Font("Segoe UI", 18, FontStyle.Bold);
+            title.Left = 21;
+            title.Top = 24;
+            title.Width = 420;
+            title.Height = 38;
+            panel.Controls.Add(title);
+
+            var description = new Label();
+            description.Text = "Select a screen area for recording. This is separate from screenshot editing and does not change image Pro tools.";
+            description.Font = new Font("Segoe UI", 10);
+            description.ForeColor = Color.FromArgb(45, 57, 76);
+            description.Left = 23;
+            description.Top = 72;
+            description.Width = 620;
+            description.Height = 42;
+            panel.Controls.Add(description);
+
+            var startButton = MakeSettingsTabButton("Record Area", 23, 128, delegate { Program.StartRecordingSelection(); });
+            startButton.Width = 140;
+            panel.Controls.Add(startButton);
+
+            var shortcut = new Label();
+            shortcut.Text = "Shortcut: Ctrl+Shift+R";
+            shortcut.Font = new Font("Segoe UI", 9);
+            shortcut.ForeColor = Color.FromArgb(85, 92, 104);
+            shortcut.Left = 178;
+            shortcut.Top = 134;
+            shortcut.Width = 260;
+            shortcut.Height = 24;
+            panel.Controls.Add(shortcut);
+
+            var status = new Label();
+            status.Text = "Windows capture recording will be implemented in the SDK build path. Current builds keep screenshot capture stable.";
+            status.Font = new Font("Segoe UI", 9);
+            status.ForeColor = Color.FromArgb(85, 92, 104);
+            status.Left = 23;
+            status.Top = 184;
+            status.Width = 660;
+            status.Height = 44;
+            panel.Controls.Add(status);
+        }
+#endif
 
         private void BuildSettingsTab(TabPage page)
         {
