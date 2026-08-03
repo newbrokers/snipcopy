@@ -1,3 +1,4 @@
 @echo off
-if not exist "%~dp0SnipCopy.exe" call "%~dp0Build.bat"
+call "%~dp0Build.bat"
+if errorlevel 1 exit /b 1
 start "" "%~dp0SnipCopy.exe"

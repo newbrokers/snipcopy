@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Customer {
+  id               String               @id @default(cuid())
+  email            String               @unique
+  name             String?
+  stripeCustomerId String?              @unique
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  licenses         License[]
+  subscriptions    StripeSubscription[]
+  auditEvents      AuditEvent[]
+}
+
+model License {
+  id                   String       @id @default(cuid())
+  licenseKey           String       @unique
+  customerEmail        String
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  plan                 String       @default("pro")
+  productSlug          String       @default("snipcopy")
+  status               String       @default("active")
+  issuedAt             DateTime     @default(now())
+  expiresAt            DateTime
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  customerId           String?
+  customer             Customer?    @relation(fields: [customerId], references: [id])
+  tokens               LicenseToken[]
+  activations          Activation[]
+
+  @@index([customerEmail])
+  @@index([customerEmail, productSlug])
+  @@index([productSlug])
+  @@index([stripeSubscriptionId])
+  @@index([status])
+}
+
+model LicenseToken {
+  id          String   @id @default(cuid())
+  productSlug String   @default("snipcopy")
+  token       String
+  payloadJson String
+  issuedAt    DateTime @default(now())
+  expiresAt   DateTime
+  licenseId   String
+  license     License  @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+
+  @@index([productSlug])
+}
+
+model Activation {
+  id          String   @id @default(cuid())
+  licenseId   String
+  license     License  @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+  email       String
+  machineHash String?
+  ipHash      String?
+  createdAt   DateTime @default(now())
+}
+
+model StripeSubscription {
+  id                   String    @id @default(cuid())
+  stripeSubscriptionId String    @unique
+  stripeCustomerId     String
+  productSlug          String    @default("snipcopy")
+  customerId           String?
+  status               String
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  customer             Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([productSlug])
+}
+
+model AuditEvent {
+  id         String    @id @default(cuid())
+  action     String
+  actorEmail String?
+  metadata   String?
+  createdAt  DateTime  @default(now())
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([action])
+}

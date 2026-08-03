@@ -9,4 +9,4 @@ if not exist "%CSC%" (
 if errorlevel 1 exit /b 1
 "%~dp0IconMaker.exe" "%~dp0SnipCopy.ico"
 if errorlevel 1 exit /b 1
-"%CSC%" /nologo /target:winexe /optimize+ /win32icon:"%~dp0SnipCopy.ico" /out:"%~dp0SnipCopy.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll "%~dp0SnipCopy.cs"
+"%CSC%" /nologo /target:winexe /optimize+ /win32icon:"%~dp0SnipCopy.ico" /out:"%~dp0SnipCopy.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Numerics.dll /reference:System.Security.dll /reference:System.Windows.Forms.dll "%~dp0SnipCopy.cs"
