@@ -55,6 +55,7 @@ export function PortalTools() {
   const [codeRequested, setCodeRequested] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ApiResult | null>(null);
+  const [copiedValue, setCopiedValue] = useState("");
 
   function setError(error: string) {
     setResult({ error });
@@ -168,6 +169,12 @@ export function PortalTools() {
     setResult(null);
   }
 
+  async function copyValue(value: string) {
+    await navigator.clipboard.writeText(value);
+    setCopiedValue(value);
+    window.setTimeout(() => setCopiedValue((current) => (current === value ? "" : current)), 2000);
+  }
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("checkout") === "success") {
@@ -255,11 +262,18 @@ export function PortalTools() {
                 <span>Status: {license.status}</span>
                 <span>Expires: {new Date(license.expiresAt).toLocaleDateString()}</span>
               </div>
-              <label className="license-key-row">
+              <label className="license-copy-row">
+                <span>Purchase email</span>
+                <input className="input" readOnly value={license.customerEmail} />
+                <button className="button copy-button" type="button" onClick={() => copyValue(license.customerEmail)}>
+                  {copiedValue === license.customerEmail ? "✓" : "Copy"}
+                </button>
+              </label>
+              <label className="license-copy-row">
                 <span>License key</span>
                 <input className="input" readOnly value={license.licenseKey} />
-                <button className="button" type="button" onClick={() => navigator.clipboard.writeText(license.licenseKey)}>
-                  Copy
+                <button className="button copy-button" type="button" onClick={() => copyValue(license.licenseKey)}>
+                  {copiedValue === license.licenseKey ? "✓" : "Copy"}
                 </button>
               </label>
             </article>

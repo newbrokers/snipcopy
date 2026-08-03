@@ -435,17 +435,21 @@ h3 {
   color: var(--steel);
 }
 
-.license-key-row {
+.license-copy-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
 }
 
-.license-key-row span {
+.license-copy-row span {
   grid-column: 1 / -1;
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.copy-button {
+  min-width: 74px;
 }
 
 .table {
@@ -486,7 +490,7 @@ h3 {
     grid-template-columns: 1fr;
   }
 
-  .license-key-row {
+  .license-copy-row {
     grid-template-columns: 1fr;
   }
 
