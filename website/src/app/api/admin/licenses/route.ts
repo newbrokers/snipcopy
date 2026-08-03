@@ -21,7 +21,17 @@ export async function GET(request: NextRequest) {
     orderBy: { updatedAt: "desc" },
     take: 50,
     include: {
-      tokens: { orderBy: { issuedAt: "desc" }, take: 1 },
+      tokens: {
+        orderBy: { issuedAt: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          productSlug: true,
+          issuedAt: true,
+          expiresAt: true,
+          licenseId: true
+        }
+      },
       activations: { orderBy: { createdAt: "desc" }, take: 5 }
     }
   });

@@ -10,26 +10,31 @@ const verifySchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const body = verifySchema.safeParse(await request.json().catch(() => ({})));
-  if (!body.success) return json({ error: "Enter the 6-digit sign-in code." }, { status: 400 });
+  try {
+    const body = verifySchema.safeParse(await request.json().catch(() => ({})));
+    if (!body.success) return json({ error: "Enter the 6-digit sign-in code." }, { status: 400 });
 
-  const email = normalizeEmail(body.data.email);
-  const ip = getClientIp(request);
-  const limited = rateLimit(`portal-verify:${ip}:${email}`, 10, 15 * 60 * 1000);
-  if (!limited.ok) return json({ error: "Too many verification attempts. Please request a new code later." }, { status: 429 });
+    const email = normalizeEmail(body.data.email);
+    const ip = getClientIp(request);
+    const limited = rateLimit(`portal-verify:${ip}:${email}`, 10, 15 * 60 * 1000);
+    if (!limited.ok) return json({ error: "Too many verification attempts. Please request a new code later." }, { status: 429 });
 
-  const session = await verifyPortalLoginCode(email, body.data.code);
-  if (!session) return json({ error: "That code is invalid or expired." }, { status: 401 });
+    const session = await verifyPortalLoginCode(email, body.data.code);
+    if (!session) return json({ error: "That code is invalid or expired." }, { status: 401 });
 
-  await prisma.auditEvent.create({
-    data: {
-      action: "portal.login",
-      actorEmail: session.email,
-      metadata: JSON.stringify({ sessionId: session.sessionId })
-    }
-  });
+    await prisma.auditEvent.create({
+      data: {
+        action: "portal.login",
+        actorEmail: session.email,
+        metadata: JSON.stringify({ sessionId: session.sessionId })
+      }
+    });
 
-  const response = json({ authenticated: true, email: session.email });
-  setPortalSessionCookie(response, session.token, session.expiresAt);
-  return response;
+    const response = json({ authenticated: true, email: session.email });
+    setPortalSessionCookie(response, session.token, session.expiresAt);
+    return response;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not verify the SavedCode sign-in code.";
+    return json({ error: message }, { status: 500 });
+  }
 }

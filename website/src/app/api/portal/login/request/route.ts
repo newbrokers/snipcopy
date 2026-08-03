@@ -22,36 +22,36 @@ async function emailFromCheckoutSession(sessionId?: string) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = requestSchema.safeParse(await request.json().catch(() => ({})));
-  if (!body.success) return json({ error: "Enter the email used for purchase." }, { status: 400 });
+  try {
+    const body = requestSchema.safeParse(await request.json().catch(() => ({})));
+    if (!body.success) return json({ error: "Enter the email used for purchase." }, { status: 400 });
 
-  const ip = getClientIp(request);
-  const rawEmail = body.data.email ?? (await emailFromCheckoutSession(body.data.sessionId).catch(() => undefined));
-  if (!rawEmail) return json({ error: "Enter the email used for purchase." }, { status: 400 });
+    const ip = getClientIp(request);
+    const rawEmail = body.data.email ?? (await emailFromCheckoutSession(body.data.sessionId).catch(() => undefined));
+    if (!rawEmail) return json({ error: "Enter the email used for purchase." }, { status: 400 });
 
-  const email = normalizeEmail(rawEmail);
-  const limitedByIp = rateLimit(`portal-login-ip:${ip}`, 10, 15 * 60 * 1000);
-  const limitedByEmail = rateLimit(`portal-login-email:${email}`, 5, 15 * 60 * 1000);
-  if (!limitedByIp.ok || !limitedByEmail.ok) {
-    return json({ error: "Too many sign-in attempts. Please try again later." }, { status: 429 });
-  }
+    const email = normalizeEmail(rawEmail);
+    const limitedByIp = rateLimit(`portal-login-ip:${ip}`, 10, 15 * 60 * 1000);
+    const limitedByEmail = rateLimit(`portal-login-email:${email}`, 5, 15 * 60 * 1000);
+    if (!limitedByIp.ok || !limitedByEmail.ok) {
+      return json({ error: "Too many sign-in attempts. Please try again later." }, { status: 429 });
+    }
 
-  const loginCode = await createPortalLoginCode(email, ip);
-  let devCode: string | undefined;
+    const loginCode = await createPortalLoginCode(email, ip);
+    let devCode: string | undefined;
 
-  if (loginCode.created) {
-    try {
+    if (loginCode.created) {
       const delivery = await sendPortalLoginCode(email, loginCode.code);
       devCode = "devCode" in delivery ? delivery.devCode : undefined;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not send the SavedCode sign-in email.";
-      return json({ error: message }, { status: 500 });
     }
-  }
 
-  return json({
-    ok: true,
-    message: "If that email has a SavedCode license, a sign-in code has been sent.",
-    ...(devCode ? { devCode } : {})
-  });
+    return json({
+      ok: true,
+      message: "If that email has a SavedCode license, a sign-in code has been sent.",
+      ...(devCode ? { devCode } : {})
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not start SavedCode portal sign-in.";
+    return json({ error: message }, { status: 500 });
+  }
 }

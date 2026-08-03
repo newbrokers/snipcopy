@@ -142,9 +142,18 @@ Production portal environment variables:
 
 - `PORTAL_SESSION_SECRET`: random server-only string, at least 32 characters
 - `RESEND_API_KEY`: server-only Resend API key for sign-in code emails
-- `EMAIL_FROM`: verified sender, for example `SavedCode <licenses@savedcode.com>`
+- `EMAIL_FROM`: verified sender, for example `SavedCode Support <support@savedcode.com>`
 
 If email delivery is not configured in production, portal sign-in intentionally fails instead of exposing license data.
+
+Resend setup:
+
+1. Add and verify `savedcode.com` in Resend Domains.
+2. Add the DNS records Resend provides at your DNS host.
+3. Create a Sending access API key.
+4. In Vercel Production, set `RESEND_API_KEY` to that key.
+5. In Vercel Production, set `EMAIL_FROM=SavedCode Support <support@savedcode.com>`.
+6. Redeploy production after saving environment variables.
 
 ## License API
 

@@ -7,12 +7,23 @@ export function AdminSearch() {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState("");
 
+  async function readJson(response: Response) {
+    const text = await response.text();
+    if (!text) return { error: response.ok ? "Empty server response." : "SavedCode could not complete that request." };
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { error: text.slice(0, 240) || "Unexpected server response." };
+    }
+  }
+
   async function search() {
     const params = query ? `?q=${encodeURIComponent(query)}` : "";
     const response = await fetch(`/api/admin/licenses${params}`, {
       headers: { authorization: `Bearer ${token}` }
     });
-    setResult(JSON.stringify(await response.json(), null, 2));
+    setResult(JSON.stringify(await readJson(response), null, 2));
   }
 
   return (

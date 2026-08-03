@@ -27,6 +27,19 @@ type ApiResult = {
   devCode?: string;
 };
 
+async function readApiResult(response: Response): Promise<ApiResult> {
+  const text = await response.text();
+  if (!text) {
+    return { error: response.ok ? "Empty server response." : "SavedCode could not complete that request. Check the server configuration and try again." };
+  }
+
+  try {
+    return JSON.parse(text) as ApiResult;
+  } catch {
+    return { error: response.ok ? "Unexpected server response." : text.slice(0, 240) || "Unexpected server error." };
+  }
+}
+
 export function PortalTools() {
   const emailRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef<HTMLInputElement>(null);
@@ -49,7 +62,7 @@ export function PortalTools() {
 
   async function refreshSession() {
     const response = await fetch("/api/portal/session");
-    const data = (await response.json()) as ApiResult;
+    const data = await readApiResult(response);
     setAuthenticated(Boolean(data.authenticated));
     setSessionEmail(data.email ?? "");
     setSessionLoading(false);
@@ -72,7 +85,7 @@ export function PortalTools() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: nextEmail, session_id: params.get("session_id") ?? undefined })
       });
-      const data = (await response.json()) as ApiResult;
+      const data = await readApiResult(response);
       setResult(data);
       if (response.ok) setCodeRequested(true);
     } finally {
@@ -95,7 +108,7 @@ export function PortalTools() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: nextEmail, code: nextCode })
       });
-      const data = (await response.json()) as ApiResult;
+      const data = await readApiResult(response);
       setResult(data);
       if (response.ok && data.authenticated) {
         setAuthenticated(true);
@@ -119,7 +132,7 @@ export function PortalTools() {
     setLoading(true);
     try {
       const response = await fetch(`/api/license/status?${params.toString()}`);
-      const data = (await response.json()) as ApiResult;
+      const data = await readApiResult(response);
       setResult(data);
     } finally {
       setLoading(false);
@@ -133,7 +146,7 @@ export function PortalTools() {
     setLoading(true);
     try {
       const response = await fetch("/api/billing/portal", { method: "POST" });
-      const data = (await response.json()) as ApiResult & { url?: string };
+      const data = (await readApiResult(response)) as ApiResult & { url?: string };
       if (response.ok && data.url) {
         if (portalWindow) portalWindow.location.href = data.url;
         else window.location.href = data.url;
