@@ -16,6 +16,7 @@ Current products:
 - Supabase Postgres for production data
 - Stripe Checkout, Billing Portal, and webhooks
 - Ed25519 signed offline license tokens
+- Email-code customer portal sessions
 - Supabase project wiring for Postgres and optional Auth
 
 ## Setup
@@ -126,10 +127,24 @@ stripe listen --forward-to localhost:3000/api/stripe/webhook
 Handled events:
 
 - `checkout.session.completed`
+- `customer.subscription.created`
 - `customer.subscription.updated`
 - `customer.subscription.deleted`
+- `invoice.paid`
 - `invoice.payment_succeeded`
 - `invoice.payment_failed`
+
+## Customer Portal
+
+The portal uses passwordless email-code login. Customers enter the purchase email, receive a 6-digit code, and then get a secure HttpOnly session cookie. License lookup and billing portal creation require that verified session; typing an email alone is not enough.
+
+Production portal environment variables:
+
+- `PORTAL_SESSION_SECRET`: random server-only string, at least 32 characters
+- `RESEND_API_KEY`: server-only Resend API key for sign-in code emails
+- `EMAIL_FROM`: verified sender, for example `SavedCode <licenses@savedcode.com>`
+
+If email delivery is not configured in production, portal sign-in intentionally fails instead of exposing license data.
 
 ## License API
 
@@ -137,9 +152,9 @@ Handled events:
 - `POST /api/stripe/webhook`
 - `POST /api/license/activate`
 - `POST /api/license/sync`
-- `GET /api/license/status`
+- `GET /api/license/status` requires a verified portal session
 - `GET /api/admin/licenses`
-- `POST /api/billing/portal`
+- `POST /api/billing/portal` requires a verified portal session
 
 ## Offline Token Payload
 
@@ -171,9 +186,10 @@ Authorization: Bearer YOUR_ADMIN_TOKEN
 
 Production domain:
 
-- `https://savedcode.com`
-- Set `APP_URL` to `https://savedcode.com` in production.
-- Set Stripe return URLs to the same domain.
+- `https://www.savedcode.com`
+- Set `APP_URL` to `https://www.savedcode.com` in production.
+- Set `STRIPE_PORTAL_RETURN_URL` to `https://www.savedcode.com/portal` in production.
+- Stripe webhook endpoint should be `https://www.savedcode.com/api/stripe/webhook`; avoid the apex URL because Vercel redirects it.
 
 Current Supabase project:
 

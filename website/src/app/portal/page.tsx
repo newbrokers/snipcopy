@@ -8,8 +8,8 @@ export default function PortalPage() {
           <div className="eyebrow">Customer portal</div>
           <h1>Find your SavedCode license and manage billing.</h1>
           <p className="lead">
-            Use the email from checkout to check license metadata for SavedCode products or open Stripe&apos;s secure billing
-            portal.
+            Sign in with the email from checkout to view your license keys, copy activation details, and open Stripe&apos;s
+            secure billing portal.
           </p>
         </div>
         <PortalTools />

@@ -390,6 +390,30 @@ h3 {
   gap: 12px;
 }
 
+.session-bar {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  background: #fbfcff;
+}
+
+.session-bar span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.session-bar strong {
+  display: block;
+  margin-top: 4px;
+  word-break: break-word;
+}
+
 .license-record {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -464,6 +488,11 @@ h3 {
 
   .license-key-row {
     grid-template-columns: 1fr;
+  }
+
+  .session-bar {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .hero {

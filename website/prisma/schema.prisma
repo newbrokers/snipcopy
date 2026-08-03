@@ -17,6 +17,7 @@ model Customer {
   licenses         License[]
   subscriptions    StripeSubscription[]
   auditEvents      AuditEvent[]
+  portalSessions   CustomerPortalSession[]
 }
 
 model License {
@@ -93,4 +94,33 @@ model AuditEvent {
   customer   Customer? @relation(fields: [customerId], references: [id])
 
   @@index([action])
+}
+
+model PortalLoginCode {
+  id        String    @id @default(cuid())
+  email     String
+  codeHash  String
+  ipHash    String?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  @@index([email])
+  @@index([expiresAt])
+}
+
+model CustomerPortalSession {
+  id               String    @id @default(cuid())
+  email            String
+  sessionTokenHash String    @unique
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime
+  lastSeenAt       DateTime?
+  revokedAt        DateTime?
+  customerId       String?
+  customer         Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([email])
+  @@index([expiresAt])
+  @@index([customerId])
 }

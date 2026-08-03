@@ -9,37 +9,117 @@ const products = [
   { slug: "audio-crop", name: "Audio Crop" }
 ];
 
+type LicenseRecord = {
+  licenseKey: string;
+  productSlug: string;
+  customerEmail: string;
+  plan: string;
+  status: string;
+  expiresAt: string;
+};
+
+type ApiResult = {
+  authenticated?: boolean;
+  email?: string;
+  error?: string;
+  message?: string;
+  licenses?: LicenseRecord[];
+  devCode?: string;
+};
+
 export function PortalTools() {
   const emailRef = useRef<HTMLInputElement>(null);
+  const codeRef = useRef<HTMLInputElement>(null);
   const licenseKeyRef = useRef<HTMLInputElement>(null);
   const productSlugRef = useRef<HTMLSelectElement>(null);
   const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
   const [licenseKey, setLicenseKey] = useState("");
   const [productSlug, setProductSlug] = useState("");
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [sessionEmail, setSessionEmail] = useState("");
+  const [authenticated, setAuthenticated] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [codeRequested, setCodeRequested] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<ApiResult | null>(null);
 
-  function readFormValues() {
-    const nextEmail = (emailRef.current?.value ?? email).trim();
-    const nextLicenseKey = (licenseKeyRef.current?.value ?? licenseKey).trim();
-    const nextProductSlug = productSlugRef.current?.value ?? productSlug;
-    setEmail(nextEmail);
-    setLicenseKey(nextLicenseKey);
-    setProductSlug(nextProductSlug);
-    return { nextEmail, nextLicenseKey, nextProductSlug };
+  function setError(error: string) {
+    setResult({ error });
   }
 
-  async function loadStatus(sessionId?: string) {
-    const { nextEmail, nextLicenseKey, nextProductSlug } = readFormValues();
+  async function refreshSession() {
+    const response = await fetch("/api/portal/session");
+    const data = (await response.json()) as ApiResult;
+    setAuthenticated(Boolean(data.authenticated));
+    setSessionEmail(data.email ?? "");
+    setSessionLoading(false);
+    if (data.authenticated) await loadStatus();
+  }
+
+  async function requestCode() {
+    const nextEmail = (emailRef.current?.value ?? email).trim();
+    if (!nextEmail) {
+      setError("Enter the email used for purchase.");
+      return;
+    }
+
+    setEmail(nextEmail);
+    setLoading(true);
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const response = await fetch("/api/portal/login/request", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: nextEmail, session_id: params.get("session_id") ?? undefined })
+      });
+      const data = (await response.json()) as ApiResult;
+      setResult(data);
+      if (response.ok) setCodeRequested(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function verifyCode() {
+    const nextEmail = (emailRef.current?.value ?? email).trim();
+    const nextCode = (codeRef.current?.value ?? code).trim();
+    if (!nextEmail || !nextCode) {
+      setError("Enter your email and the 6-digit code.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await fetch("/api/portal/login/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: nextEmail, code: nextCode })
+      });
+      const data = (await response.json()) as ApiResult;
+      setResult(data);
+      if (response.ok && data.authenticated) {
+        setAuthenticated(true);
+        setSessionEmail(data.email ?? nextEmail);
+        setCode("");
+        await loadStatus();
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadStatus() {
+    const nextLicenseKey = (licenseKeyRef.current?.value ?? licenseKey).trim();
+    const nextProductSlug = productSlugRef.current?.value ?? productSlug;
     const params = new URLSearchParams();
-    if (nextEmail) params.set("email", nextEmail);
     if (nextLicenseKey) params.set("licenseKey", nextLicenseKey);
     if (nextProductSlug) params.set("product_slug", nextProductSlug);
-    if (sessionId) params.set("session_id", sessionId);
+    setLicenseKey(nextLicenseKey);
+    setProductSlug(nextProductSlug);
     setLoading(true);
     try {
       const response = await fetch(`/api/license/status?${params.toString()}`);
-      const data = await response.json();
+      const data = (await response.json()) as ApiResult;
       setResult(data);
     } finally {
       setLoading(false);
@@ -47,31 +127,84 @@ export function PortalTools() {
   }
 
   async function openBillingPortal() {
-    const { nextEmail } = readFormValues();
-    const response = await fetch("/api/billing/portal", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: nextEmail })
-    });
-    const data = await response.json();
-    if (response.ok) window.location.href = data.url;
-    else setResult(data);
+    setLoading(true);
+    try {
+      const response = await fetch("/api/billing/portal", { method: "POST" });
+      const data = (await response.json()) as ApiResult & { url?: string };
+      if (response.ok && data.url) window.location.href = data.url;
+      else setResult(data);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function logout() {
+    await fetch("/api/portal/logout", { method: "POST" });
+    setAuthenticated(false);
+    setSessionEmail("");
+    setCodeRequested(false);
+    setLicenseKey("");
+    setResult(null);
   }
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const sessionId = params.get("session_id");
-    if (params.get("checkout") === "success" && sessionId) {
-      void loadStatus(sessionId);
+    if (params.get("checkout") === "success") {
+      setResult({ message: "Payment complete. Sign in with your purchase email to view your license key." });
     }
+    void refreshSession();
   }, []);
 
-  const licenses = Array.isArray(result?.licenses) ? (result.licenses as Array<Record<string, string>>) : [];
+  const licenses = result?.licenses ?? [];
+
+  if (sessionLoading) {
+    return <div className="notice">Checking portal session...</div>;
+  }
+
+  if (!authenticated) {
+    return (
+      <div className="form">
+        <input ref={emailRef} className="input" type="email" placeholder="Purchase email" value={email} onChange={(event) => setEmail(event.target.value)} />
+        {codeRequested ? (
+          <input
+            ref={codeRef}
+            className="input"
+            inputMode="numeric"
+            maxLength={6}
+            placeholder="6-digit code"
+            value={code}
+            onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+          />
+        ) : null}
+        <div className="actions" style={{ marginTop: 0 }}>
+          <button className="button" type="button" onClick={requestCode} disabled={loading}>
+            {codeRequested ? "Send new code" : "Email sign-in code"}
+          </button>
+          {codeRequested ? (
+            <button className="button primary" type="button" onClick={verifyCode} disabled={loading}>
+              Sign in
+            </button>
+          ) : null}
+        </div>
+        {result?.error ? <div className="notice error">{result.error}</div> : null}
+        {result?.message ? <div className="notice">{result.message}</div> : null}
+        {result?.devCode ? <div className="notice">Development code: {result.devCode}</div> : null}
+      </div>
+    );
+  }
 
   return (
     <div className="form">
-      <input ref={emailRef} className="input" type="email" placeholder="Purchase email" value={email} onChange={(event) => setEmail(event.target.value)} />
-      <input ref={licenseKeyRef} className="input" placeholder="License key" value={licenseKey} onChange={(event) => setLicenseKey(event.target.value)} />
+      <div className="session-bar">
+        <div>
+          <span>Signed in as</span>
+          <strong>{sessionEmail}</strong>
+        </div>
+        <button className="button" type="button" onClick={logout}>
+          Sign out
+        </button>
+      </div>
+      <input ref={licenseKeyRef} className="input" placeholder="Filter by license key" value={licenseKey} onChange={(event) => setLicenseKey(event.target.value)} />
       <select ref={productSlugRef} className="input" value={productSlug} onChange={(event) => setProductSlug(event.target.value)} aria-label="Product">
         {products.map((product) => (
           <option key={product.slug || "all"} value={product.slug}>
@@ -81,15 +214,14 @@ export function PortalTools() {
       </select>
       <div className="actions" style={{ marginTop: 0 }}>
         <button className="button" type="button" onClick={() => loadStatus()} disabled={loading}>
-          {loading ? "Checking..." : "Check status"}
+          {loading ? "Checking..." : "Refresh licenses"}
         </button>
         <button className="button primary" type="button" onClick={openBillingPortal} disabled={loading}>
           Manage billing
         </button>
       </div>
-      {result?.error ? <div className="notice error">{String(result.error)}</div> : null}
-      {result?.message ? <div className="notice">{String(result.message)}</div> : null}
-      {result && !result.error && !licenses.length && !result.message ? <div className="notice">No license was found for those details yet.</div> : null}
+      {result?.error ? <div className="notice error">{result.error}</div> : null}
+      {result && !result.error && !licenses.length ? <div className="notice">No licenses were found for this account yet.</div> : null}
       {licenses.length ? (
         <div className="license-results">
           {licenses.map((license) => (
