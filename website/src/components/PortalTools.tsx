@@ -127,12 +127,20 @@ export function PortalTools() {
   }
 
   async function openBillingPortal() {
+    const portalWindow = window.open("about:blank", "_blank");
+    if (portalWindow) portalWindow.opener = null;
+
     setLoading(true);
     try {
       const response = await fetch("/api/billing/portal", { method: "POST" });
       const data = (await response.json()) as ApiResult & { url?: string };
-      if (response.ok && data.url) window.location.href = data.url;
-      else setResult(data);
+      if (response.ok && data.url) {
+        if (portalWindow) portalWindow.location.href = data.url;
+        else window.location.href = data.url;
+      } else {
+        if (portalWindow) portalWindow.close();
+        setResult(data);
+      }
     } finally {
       setLoading(false);
     }
@@ -217,7 +225,7 @@ export function PortalTools() {
           {loading ? "Checking..." : "Refresh licenses"}
         </button>
         <button className="button primary" type="button" onClick={openBillingPortal} disabled={loading}>
-          Manage billing
+          Manage subscription
         </button>
       </div>
       {result?.error ? <div className="notice error">{result.error}</div> : null}
