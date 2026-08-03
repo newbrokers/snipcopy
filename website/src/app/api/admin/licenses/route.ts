@@ -1,6 +1,18 @@
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { json, requireAdmin } from "@/lib/http";
+import { issueOrRenewLicense } from "@/lib/license-service";
 import { prisma } from "@/lib/prisma";
+import { DEFAULT_PRODUCT_SLUG, productSlugSchema } from "@/lib/products";
+
+const manualLicenseSchema = z.object({
+  email: z.string().email(),
+  productSlug: productSlugSchema.optional(),
+  product_slug: productSlugSchema.optional()
+}).transform((data) => ({
+  email: data.email.toLowerCase(),
+  productSlug: data.productSlug ?? data.product_slug ?? DEFAULT_PRODUCT_SLUG
+}));
 
 export async function GET(request: NextRequest) {
   if (!requireAdmin(request)) return json({ error: "Admin authorization required." }, { status: 401 });
@@ -37,4 +49,30 @@ export async function GET(request: NextRequest) {
   });
 
   return json({ licenses });
+}
+
+export async function POST(request: NextRequest) {
+  if (!requireAdmin(request)) return json({ error: "Admin authorization required." }, { status: 401 });
+
+  const body = manualLicenseSchema.safeParse(await request.json().catch(() => ({})));
+  if (!body.success) return json({ error: "Enter a valid email and product." }, { status: 400 });
+
+  const { license, payload } = await issueOrRenewLicense({
+    email: body.data.email,
+    productSlug: body.data.productSlug,
+    status: "active"
+  });
+
+  return json({
+    license: {
+      licenseKey: license.licenseKey,
+      customerEmail: license.customerEmail,
+      productSlug: license.productSlug,
+      plan: license.plan,
+      status: license.status,
+      issuedAt: license.issuedAt,
+      expiresAt: license.expiresAt,
+      activationEmail: payload.customer_email
+    }
+  });
 }

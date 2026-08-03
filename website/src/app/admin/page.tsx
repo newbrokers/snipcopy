@@ -8,8 +8,8 @@ export default function AdminPage() {
           <div className="eyebrow">Admin</div>
           <h1>SavedCode license dashboard.</h1>
           <p className="lead">
-            Search product licenses, customer emails, Stripe IDs, token expiry, and recent activations with the server-side
-            admin token.
+            Generate manual one-year Pro licenses, search customer emails, Stripe IDs, token expiry, and recent activations
+            with the server-side admin token.
           </p>
         </div>
         <AdminSearch />
