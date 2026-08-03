@@ -28,7 +28,8 @@ export async function handleStripeEvent(event: Stripe.Event) {
       });
       return { handled: true, action: "checkout.license_issued" };
     }
-    case "invoice.payment_succeeded": {
+    case "invoice.payment_succeeded":
+    case "invoice.paid": {
       const invoice = event.data.object as Stripe.Invoice;
       const email = invoice.customer_email;
       const subscriptionId = typeof invoice.subscription === "string" ? invoice.subscription : invoice.subscription?.id;
