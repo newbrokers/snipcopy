@@ -370,6 +370,60 @@ h3 {
   font: inherit;
 }
 
+.notice {
+  border: 1px solid #bfded8;
+  border-radius: 8px;
+  background: #f0fbf8;
+  color: #155d51;
+  line-height: 1.5;
+  padding: 14px 16px;
+}
+
+.notice.error {
+  border-color: #f2c0b9;
+  background: #fff4f2;
+  color: #9d3427;
+}
+
+.license-results {
+  display: grid;
+  gap: 12px;
+}
+
+.license-record {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  background: white;
+}
+
+.license-record h3 {
+  margin-top: 8px;
+  text-transform: capitalize;
+}
+
+.license-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  color: var(--steel);
+}
+
+.license-key-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.license-key-row span {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -405,6 +459,10 @@ h3 {
   .two-col,
   .product-grid,
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .license-key-row {
     grid-template-columns: 1fr;
   }
 
