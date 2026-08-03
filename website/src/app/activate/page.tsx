@@ -6,12 +6,16 @@ export default function ActivatePage() {
         <h1>Activate or sync your SavedCode license.</h1>
         <p className="lead">
           After purchase, each SavedCode product receives a license key and signed token. SnipCopy, Draw Overlay, and Audio
-          Crop all use the same offline-friendly license flow.
+          Crop all use the same offline-friendly license flow. Each Pro license allows one active activation per system.
         </p>
         <div className="grid">
           <article className="card">
             <h3>Activate</h3>
-            <p>Open the product, choose Pro activation, then paste your license key and purchase email. The first successful activation locks the license to that device.</p>
+            <p>Open the product, choose Pro activation, then paste your license key and purchase email.</p>
+          </article>
+          <article className="card">
+            <h3>One system</h3>
+            <p>The first successful activation locks the license to that system. Another system cannot reuse the same key unless support resets the activation.</p>
           </article>
           <article className="card">
             <h3>Offline use</h3>

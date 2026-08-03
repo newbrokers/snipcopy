@@ -261,6 +261,7 @@ export function PortalTools() {
               <div className="license-meta">
                 <span>Status: {license.status}</span>
                 <span>Expires: {new Date(license.expiresAt).toLocaleDateString()}</span>
+                <span>Activation: one system</span>
               </div>
               <label className="license-copy-row">
                 <span>Purchase email</span>

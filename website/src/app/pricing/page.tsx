@@ -29,7 +29,8 @@ export default function PricingPage() {
             <h2>License model</h2>
             <p>
               SavedCode products use offline-verifiable license tokens. Each app can validate its signed token with only the
-              public key, then sync after renewal to receive the next yearly token.
+              public key, then sync after renewal to receive the next yearly token. Each yearly Pro license includes one
+              active activation per system; contact support to move it to a replacement system.
             </p>
           </article>
         </div>

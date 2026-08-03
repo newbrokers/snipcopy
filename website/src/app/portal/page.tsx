@@ -9,7 +9,7 @@ export default function PortalPage() {
           <h1>Find your SavedCode license and manage billing.</h1>
           <p className="lead">
             Sign in with the email from checkout to view your license keys, copy activation details, and open Stripe&apos;s
-            secure billing portal.
+            secure billing portal. Each Pro license allows one active activation per system.
           </p>
         </div>
         <PortalTools />
