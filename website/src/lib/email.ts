@@ -13,7 +13,8 @@ export async function sendPortalLoginCode(email: string, code: string) {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json"
+      "content-type": "application/json",
+      "user-agent": "SavedCode/1.0 (https://www.savedcode.com)"
     },
     body: JSON.stringify({
       from,
