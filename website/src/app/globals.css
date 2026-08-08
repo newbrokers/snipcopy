@@ -104,6 +104,13 @@ a {
   color: white;
 }
 
+.button:disabled {
+  cursor: not-allowed;
+  border-color: var(--line);
+  background: #eef2f7;
+  color: var(--muted);
+}
+
 .button.mint {
   border-color: #2ba98f;
   background: var(--mint);

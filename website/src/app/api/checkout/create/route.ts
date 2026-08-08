@@ -7,11 +7,12 @@ import { getClientIp, json, rateLimit } from "@/lib/http";
 import { checkoutMetadata, DEFAULT_PRODUCT_SLUG, productBySlug, productSlugSchema } from "@/lib/products";
 
 const checkoutSchema = z.object({
-  email: z.string().email().optional(),
+  email: z.string().trim().email(),
   productSlug: productSlugSchema.optional(),
   product_slug: productSlugSchema.optional()
 }).transform((data) => ({
   ...data,
+  email: data.email.toLowerCase(),
   productSlug: data.productSlug ?? data.product_slug ?? DEFAULT_PRODUCT_SLUG
 }));
 
