@@ -4,8 +4,8 @@ import { PRODUCT_LIST } from "@/lib/products";
 
 const features = [
   ["Focused utilities", "Small software products built around practical workflows instead of bloated suites."],
-  ["Offline-friendly licenses", "Yearly Pro licenses use signed tokens so apps can keep working without constant server checks."],
-  ["Shared billing", "One SavedCode backend handles Stripe checkout, renewals, and license sync for every product."]
+  ["Useful free versions", "Each app keeps its core workflow usable before you decide to upgrade."],
+  ["Simple yearly Pro", "Upgrade only when you need the extra power features for your daily work."]
 ];
 
 export default function Home() {
@@ -17,8 +17,8 @@ export default function Home() {
             <div className="eyebrow">Software tools that stay useful</div>
             <h1>SavedCode</h1>
             <p className="lead">
-              A home for focused desktop apps with simple pricing, Stripe billing, and offline-friendly licenses. Starting
-              with SnipCopy, Draw Overlay, and Audio Crop.
+              A home for focused desktop apps with simple yearly Pro upgrades. Starting with SnipCopy, Draw Overlay, and
+              Audio Crop.
             </p>
             <div className="actions">
               <Link className="button primary" href="/download">
@@ -35,7 +35,7 @@ export default function Home() {
 
       <section className="feature-band">
         <div className="section">
-          <h2>One license system for many useful products.</h2>
+          <h2>Focused products for everyday work.</h2>
           <div className="product-grid">
             {PRODUCT_LIST.map((product) => (
               <article className="card product-card" key={product.slug}>
