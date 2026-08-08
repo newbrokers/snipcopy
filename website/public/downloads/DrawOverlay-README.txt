@@ -9,6 +9,10 @@ How to run:
 3. Use Ctrl+H to show or hide the overlay.
 4. Drag the Draw Overlay title area to move the toolbar.
 
+Requirement:
+- Windows 10 or newer
+- .NET 8 Desktop Runtime
+
 Free tools:
 - Pen
 - Highlighter
@@ -25,5 +29,5 @@ Pro tools:
 - Text
 
 License:
-Open License from the toolbar or tray menu. Enter the purchase email and license key from SavedCode.
+Open License from the toolbar or tray menu. Enter the purchase email and license key from savedcode.com.
 Each Pro license allows one active activation per system.

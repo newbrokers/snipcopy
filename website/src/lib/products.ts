@@ -48,11 +48,12 @@ export const PRODUCTS: Record<ProductSlug, Product> = {
     slug: "audio-crop",
     name: "Audio Crop",
     headline: "Trim audio clips quickly without opening a full editor.",
-    description: "A planned SavedCode audio utility for trimming recordings, exporting clean clips, and speeding up repetitive audio cleanup.",
+    description: "Open a recording, mark useful moments, export clean MP3 clips, and keep repetitive audio cleanup simple.",
     imageSrc: "/images/products/audio-crop.png",
     priceEnvKey: "STRIPE_AUDIO_CROP_PRO_PRICE_ID",
-    freeFeatures: ["Open common audio files", "Basic trim", "Export one clip"],
-    proFeatures: ["Batch cropping", "Silence trimming", "Preset export settings", "Recent project history", "Priority updates"]
+    downloadHref: "/downloads/AudioCrop.zip",
+    freeFeatures: ["Open common audio files", "Basic segment creation", "Export up to 3 clips"],
+    proFeatures: ["Batch export 4 or more segments", "SavedCode license sync", "Priority updates"]
   }
 };
 

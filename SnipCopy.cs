@@ -3488,13 +3488,13 @@ namespace SnipCopy
             panel.Controls.Add(deactivate);
 
             var note = new Label();
-            note.Text = "Pro unlocks Blur, Redact, Steps, and expanded history after activation.";
+            note.Text = "Pro unlocks Blur, Redact, Steps, and expanded history after activation. Manage licenses at savedcode.com.";
             note.Font = new Font("Segoe UI", 9);
             note.ForeColor = Color.FromArgb(85, 92, 104);
             note.Left = 21;
             note.Top = 198;
             note.Width = 560;
-            note.Height = 24;
+            note.Height = 42;
             panel.Controls.Add(note);
         }
 
@@ -4491,6 +4491,16 @@ namespace SnipCopy
 
             var deactivate = MakeButton("Deactivate", 311, 140, delegate { DeactivateLicense(); });
             Controls.Add(deactivate);
+
+            var domain = new Label();
+            domain.Text = "Licenses and portal: savedcode.com";
+            domain.Font = new Font("Segoe UI", 9);
+            domain.ForeColor = Color.FromArgb(85, 92, 104);
+            domain.Left = 21;
+            domain.Top = 190;
+            domain.Width = 360;
+            domain.Height = 22;
+            Controls.Add(domain);
 
             var close = MakeButton("Close", 311, 228, delegate { Close(); });
             Controls.Add(close);

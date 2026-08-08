@@ -25,6 +25,8 @@ export default function DownloadPage() {
               <p>{product.description}</p>
               <ul className="list">
                 <li>Windows 10 or newer</li>
+                <li>.NET 8 Desktop Runtime</li>
+                {product.slug === "audio-crop" ? <li>FFmpeg tools for preview and export</li> : null}
                 <li>Offline Pro token verification</li>
                 <li>Yearly SavedCode license support</li>
               </ul>

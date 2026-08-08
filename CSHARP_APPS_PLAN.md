@@ -66,4 +66,30 @@ Keep SnipCopy stable while the new Draw Overlay C# app is built beside it.
 
 ## Next Practical Step
 
-Test `DrawOverlay.exe` interactively, then use the same shared C# license module for `AudioCrop.exe`. The old Python `draw-overlay/` prototype has been retired from this repo.
+## Audio Crop C# Status
+
+The first C# Audio Crop app lives in:
+
+`audiocrop-csharp/`
+
+Build it from the repo root with:
+
+`Build-AudioCrop.bat`
+
+Launch it from the repo root with:
+
+`Start-AudioCrop.bat`
+
+The app includes:
+
+- opening common audio formats through FFmpeg
+- playback preview through FFplay
+- start/end time fields and Set Start / Set End buttons
+- segment list editing
+- Free export of up to 3 segments
+- Pro-gated batch export of 4 or more segments
+- SavedCode license dialog using `shared-csharp/SavedCodeLicense.cs`
+
+## Next Practical Step
+
+Test `DrawOverlay.exe` and `AudioCrop.exe` interactively, then decide whether to retire the old Python `audiocrop/` prototype. The old Python `draw-overlay/` prototype has been retired from this repo.

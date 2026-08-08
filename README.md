@@ -79,6 +79,34 @@ The output is written to:
 draw-overlay-csharp\bin\x64\Release\net8.0-windows\DrawOverlay.exe
 ```
 
+## Audio Crop C# Build
+
+`audiocrop-csharp/` is the C# version of Audio Crop. It is a separate Windows app that uses the shared SavedCode license verifier in `shared-csharp/SavedCodeLicense.cs`.
+
+Audio Crop uses external FFmpeg tools for audio duration, preview, and export. Install them with:
+
+```bat
+winget install Gyan.FFmpeg
+```
+
+To build it:
+
+```bat
+Build-AudioCrop.bat
+```
+
+To build and launch it:
+
+```bat
+Start-AudioCrop.bat
+```
+
+The output is written to:
+
+```text
+audiocrop-csharp\bin\x64\Release\net8.0-windows\AudioCrop.exe
+```
+
 ## Exit
 
 Right-click the tray icon and choose `Exit`.

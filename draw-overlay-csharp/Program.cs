@@ -879,8 +879,7 @@ namespace DrawOverlay
         {
             Text = "SavedCode License";
             Icon = Program.AppIcon;
-            Width = 462;
-            Height = 310;
+            ClientSize = new Size(462, 300);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -904,11 +903,21 @@ namespace DrawOverlay
             version.Height = 22;
             Controls.Add(version);
 
+            var domain = new Label();
+            domain.Text = "Licenses and portal: savedcode.com";
+            domain.Font = new Font("Segoe UI", 9);
+            domain.ForeColor = Color.FromArgb(70, 82, 105);
+            domain.Left = 21;
+            domain.Top = 78;
+            domain.Width = 340;
+            domain.Height = 22;
+            Controls.Add(domain);
+
             statusLabel = new Label();
             statusLabel.Text = Program.LicenseStatusText();
             statusLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
             statusLabel.Left = 21;
-            statusLabel.Top = 88;
+            statusLabel.Top = 108;
             statusLabel.Width = 398;
             statusLabel.Height = 42;
             Controls.Add(statusLabel);
@@ -916,14 +925,14 @@ namespace DrawOverlay
             var emailLabel = new Label();
             emailLabel.Text = "Email";
             emailLabel.Left = 21;
-            emailLabel.Top = 140;
+            emailLabel.Top = 160;
             emailLabel.Width = 90;
             emailLabel.Height = 22;
             Controls.Add(emailLabel);
 
             emailBox = new TextBox();
             emailBox.Left = 125;
-            emailBox.Top = 136;
+            emailBox.Top = 156;
             emailBox.Width = 294;
             emailBox.Height = 24;
             Controls.Add(emailBox);
@@ -931,22 +940,22 @@ namespace DrawOverlay
             var keyLabel = new Label();
             keyLabel.Text = "License Key";
             keyLabel.Left = 21;
-            keyLabel.Top = 174;
+            keyLabel.Top = 194;
             keyLabel.Width = 90;
             keyLabel.Height = 22;
             Controls.Add(keyLabel);
 
             keyBox = new TextBox();
             keyBox.Left = 125;
-            keyBox.Top = 170;
+            keyBox.Top = 190;
             keyBox.Width = 294;
             keyBox.Height = 24;
             Controls.Add(keyBox);
 
-            var activate = MakeButton("Activate", 21, 218, delegate { ActivateLicense(); });
-            var sync = MakeButton("Sync", 126, 218, delegate { SyncLicense(); });
-            var deactivate = MakeButton("Deactivate", 231, 218, delegate { DeactivateLicense(); });
-            var close = MakeButton("Close", 336, 218, delegate { Close(); });
+            var activate = MakeButton("Activate", 21, 238, delegate { ActivateLicense(); });
+            var sync = MakeButton("Sync", 126, 238, delegate { SyncLicense(); });
+            var deactivate = MakeButton("Deactivate", 231, 238, delegate { DeactivateLicense(); });
+            var close = MakeButton("Close", 336, 238, delegate { Close(); });
             Controls.Add(activate);
             Controls.Add(sync);
             Controls.Add(deactivate);
