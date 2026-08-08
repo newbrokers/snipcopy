@@ -66,4 +66,4 @@ Keep SnipCopy stable while the new Draw Overlay C# app is built beside it.
 
 ## Next Practical Step
 
-Test `DrawOverlay.exe` interactively, then decide whether to replace or retire the Python `draw-overlay/` app. After that, use the same shared C# license module for `AudioCrop.exe`.
+Test `DrawOverlay.exe` interactively, then use the same shared C# license module for `AudioCrop.exe`. The old Python `draw-overlay/` prototype has been retired from this repo.
