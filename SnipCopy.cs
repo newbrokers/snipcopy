@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using DrawingImageFormat = System.Drawing.Imaging.ImageFormat;
 using System.IO;
 using System.Numerics;
 using System.Net;
@@ -11,6 +13,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+#if SDK_RECORDING
+using ScreenRecorderLib;
+#endif
 
 namespace SnipCopy
 {
@@ -18,23 +23,42 @@ namespace SnipCopy
     {
         internal const string AppVersion = "0.2.0";
         internal static LicenseInfo License;
+        internal static ShortcutConfig Shortcuts;
+#if SDK_RECORDING
+        internal static RecordingAudioConfig RecordingAudio;
+#endif
         internal static Bitmap LastImage;
         internal static string LastImagePath;
         internal static bool OpenEditorAfterSnip;
         internal static NotifyIcon TrayIcon;
         internal static Icon AppIcon;
+        private static ToolStripItem snipItem;
+        private static ToolStripItem editorItem;
         private static ToolStripMenuItem licenseItem;
         private static ToolStripMenuItem historyItem;
-        private static DateTime openEditorToastUntilUtc = DateTime.MinValue;
+        private static DateTime toastActionUntilUtc = DateTime.MinValue;
+        private static ToastAction pendingToastAction = ToastAction.None;
         private static EditorForm editorWindow;
         private static HotkeyWindow hotkeyWindow;
+        private static HotkeyWindow editorHotkeyWindow;
 #if SDK_RECORDING
         private static HotkeyWindow recordHotkeyWindow;
+        private static ToolStripItem recordItem;
 #endif
         private const int SnipHotkeyId = 9182;
+        private const int EditorHotkeyId = 9184;
 #if SDK_RECORDING
         private const int RecordHotkeyId = 9183;
 #endif
+
+        private enum ToastAction
+        {
+            None,
+            OpenEditor,
+#if SDK_RECORDING
+            OpenRecordTab
+#endif
+        }
 
         [STAThread]
         static void Main()
@@ -44,6 +68,10 @@ namespace SnipCopy
 
             var context = new ApplicationContext();
             License = LicenseStore.Load();
+            Shortcuts = ShortcutStore.Load();
+#if SDK_RECORDING
+            RecordingAudio = RecordingAudioStore.Load();
+#endif
             HistoryStore.ImportLegacyTempHistory();
             AppIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? CreateAppIcon();
             TrayIcon = new NotifyIcon();
@@ -53,11 +81,11 @@ namespace SnipCopy
             TrayIcon.BalloonTipClicked += delegate { HandleToastClick(); };
 
             var menu = new ContextMenuStrip();
-            var newItem = menu.Items.Add("New snip    Ctrl+Shift+S");
+            snipItem = menu.Items.Add("");
 #if SDK_RECORDING
-            var recordItem = menu.Items.Add("Record area    Ctrl+Shift+R");
+            recordItem = menu.Items.Add("");
 #endif
-            var editItem = menu.Items.Add("Open last in editor");
+            editorItem = menu.Items.Add("");
             historyItem = new ToolStripMenuItem();
             menu.Items.Add(historyItem);
             var autoEditorItem = new ToolStripMenuItem("Open editor after snip");
@@ -70,13 +98,14 @@ namespace SnipCopy
             var settingsItem = menu.Items.Add("Settings / About");
             menu.Items.Add("-");
             var exitItem = menu.Items.Add("Exit");
+            RefreshShortcutMenuText();
             RefreshLicenseMenuText();
 
-            newItem.Click += delegate { StartSnip(); };
+            snipItem.Click += delegate { StartSnip(); };
 #if SDK_RECORDING
             recordItem.Click += delegate { StartRecordingSelection(); };
 #endif
-            editItem.Click += delegate { OpenEditor(LastImage); };
+            editorItem.Click += delegate { OpenEditorOrBlank(); };
             historyItem.Click += delegate { ShowHistory(); };
             autoEditorItem.CheckedChanged += delegate { OpenEditorAfterSnip = autoEditorItem.Checked; };
             settingsItem.Click += delegate { ShowSettings(); };
@@ -86,37 +115,35 @@ namespace SnipCopy
 
             hotkeyWindow = new HotkeyWindow(SnipHotkeyId);
             hotkeyWindow.HotkeyPressed += delegate { StartSnip(); };
-            bool registered = NativeMethods.RegisterHotKey(
-                hotkeyWindow.Handle,
-                SnipHotkeyId,
-                NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT,
-                (uint)Keys.S);
+            bool registered = RegisterConfiguredHotKey(hotkeyWindow, SnipHotkeyId, Shortcuts.Snip);
+
+            editorHotkeyWindow = new HotkeyWindow(EditorHotkeyId);
+            editorHotkeyWindow.HotkeyPressed += delegate { OpenEditorOrBlank(); };
+            bool editorRegistered = RegisterConfiguredHotKey(editorHotkeyWindow, EditorHotkeyId, Shortcuts.Editor);
 
 #if SDK_RECORDING
             recordHotkeyWindow = new HotkeyWindow(RecordHotkeyId);
             recordHotkeyWindow.HotkeyPressed += delegate { StartRecordingSelection(); };
-            bool recordRegistered = NativeMethods.RegisterHotKey(
-                recordHotkeyWindow.Handle,
-                RecordHotkeyId,
-                NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT,
-                (uint)Keys.R);
+            bool recordRegistered = RegisterConfiguredHotKey(recordHotkeyWindow, RecordHotkeyId, Shortcuts.Record);
 #endif
 
-            ShowToast(
-                "SnipCopy is running",
+            string startupMessage =
 #if SDK_RECORDING
-                BuildHotkeyMessage(registered, recordRegistered));
+                BuildHotkeyMessage(registered, recordRegistered, editorRegistered);
 #else
-                registered ? "Press Ctrl+Shift+S or double-click the tray icon." : "Hotkey registration failed. Use the tray icon to snip.");
+                BuildHotkeyMessage(registered, editorRegistered);
 #endif
+            ShowToast("SnipCopy is running", startupMessage, ToastAction.OpenEditor);
 
             context.ThreadExit += delegate
             {
                 NativeMethods.UnregisterHotKey(hotkeyWindow.Handle, SnipHotkeyId);
+                NativeMethods.UnregisterHotKey(editorHotkeyWindow.Handle, EditorHotkeyId);
 #if SDK_RECORDING
                 NativeMethods.UnregisterHotKey(recordHotkeyWindow.Handle, RecordHotkeyId);
 #endif
                 hotkeyWindow.Dispose();
+                editorHotkeyWindow.Dispose();
 #if SDK_RECORDING
                 recordHotkeyWindow.Dispose();
 #endif
@@ -129,13 +156,27 @@ namespace SnipCopy
             Application.Run(context);
         }
 
-#if SDK_RECORDING
-        private static string BuildHotkeyMessage(bool snipRegistered, bool recordRegistered)
+        private static string BuildHotkeyMessage(bool snipRegistered, bool editorRegistered)
         {
-            if (snipRegistered && recordRegistered) return "Press Ctrl+Shift+S to snip or Ctrl+Shift+R to record.";
-            if (snipRegistered) return "Press Ctrl+Shift+S or double-click the tray icon. Record hotkey failed.";
-            if (recordRegistered) return "Snip hotkey failed. Press Ctrl+Shift+R to record or use the tray menu.";
+            if (snipRegistered && editorRegistered) return Shortcuts.Snip.DisplayText + " snips. " + Shortcuts.Editor.DisplayText + " opens the editor.";
+            if (snipRegistered) return Shortcuts.Snip.DisplayText + " snips. Editor hotkey failed.";
+            if (editorRegistered) return "Snip hotkey failed. " + Shortcuts.Editor.DisplayText + " opens the editor.";
             return "Hotkey registration failed. Use the tray menu.";
+        }
+
+#if SDK_RECORDING
+        private static string BuildHotkeyMessage(bool snipRegistered, bool recordRegistered, bool editorRegistered)
+        {
+            if (snipRegistered && recordRegistered && editorRegistered)
+            {
+                return Shortcuts.Snip.DisplayText + " snips. " + Shortcuts.Record.DisplayText + " records. " + Shortcuts.Editor.DisplayText + " opens the editor.";
+            }
+
+            var failed = new List<string>();
+            if (!snipRegistered) failed.Add("snip");
+            if (!recordRegistered) failed.Add("record");
+            if (!editorRegistered) failed.Add("editor");
+            return "Some hotkeys failed: " + String.Join(", ", failed.ToArray()) + ". Use the tray menu.";
         }
 #endif
 
@@ -168,6 +209,52 @@ namespace SnipCopy
             if (historyItem == null) return;
             int count = HistoryStore.GetItems().Count;
             historyItem.Text = "History (" + count + ")";
+        }
+
+        internal static void RefreshShortcutMenuText()
+        {
+            if (Shortcuts == null) Shortcuts = ShortcutStore.Load();
+            if (snipItem != null) snipItem.Text = "New snip    " + Shortcuts.Snip.DisplayText;
+            if (editorItem != null) editorItem.Text = "Open editor    " + Shortcuts.Editor.DisplayText;
+#if SDK_RECORDING
+            if (recordItem != null) recordItem.Text = "Record area    " + Shortcuts.Record.DisplayText;
+#endif
+        }
+
+        internal static void RefreshOpenEditorShortcuts()
+        {
+            if (editorWindow == null || editorWindow.IsDisposed) return;
+            editorWindow.RefreshShortcutState();
+        }
+
+        internal static bool UpdateShortcuts(ShortcutConfig next, out string message)
+        {
+            if (next == null) next = ShortcutConfig.Defaults();
+            string validation;
+            if (!next.Validate(out validation))
+            {
+                message = validation;
+                return false;
+            }
+
+            ShortcutConfig previous = Shortcuts == null ? ShortcutConfig.Defaults() : Shortcuts.Clone();
+            UnregisterConfiguredHotkeys();
+
+            string failed;
+            if (!TryRegisterConfiguredHotkeys(next, out failed))
+            {
+                UnregisterConfiguredHotkeys();
+                TryRegisterConfiguredHotkeys(previous, out failed);
+                message = "Could not register " + failed + ". Another app may already use that shortcut.";
+                return false;
+            }
+
+            Shortcuts = next.Clone();
+            ShortcutStore.Save(Shortcuts);
+            RefreshShortcutMenuText();
+            RefreshOpenEditorShortcuts();
+            message = "Shortcuts updated.";
+            return true;
         }
 
         internal static void ShowSettings()
@@ -261,13 +348,18 @@ namespace SnipCopy
 #if SDK_RECORDING
         internal static void StartRecordingSelection()
         {
+            if (RecordingManager.HasSession)
+            {
+                RecordingManager.ShowControls();
+                return;
+            }
             if (CaptureOverlay.IsOpen) return;
             using (var screenshot = CaptureScreen())
             {
                 var overlay = new CaptureOverlay(screenshot);
                 if (overlay.ShowDialog() == DialogResult.OK && overlay.SelectedScreenBounds.Width > 0)
                 {
-                    RecordingManager.ShowUnavailable(overlay.SelectedScreenBounds);
+                    RecordingManager.Start(overlay.SelectedScreenBounds);
                 }
                 if (overlay.CapturedImage != null) overlay.CapturedImage.Dispose();
             }
@@ -311,17 +403,96 @@ namespace SnipCopy
             editorWindow.Show();
         }
 
+        internal static void OpenEditorOrBlank()
+        {
+            using (Bitmap seed = CreateEditorSeedBitmap())
+            {
+                OpenEditor(seed);
+            }
+        }
+
+        private static Bitmap CreateEditorSeedBitmap()
+        {
+            if (LastImage != null) return new Bitmap(LastImage);
+
+            foreach (HistoryItem item in HistoryStore.GetItems())
+            {
+                try
+                {
+                    return new Bitmap(item.Path);
+                }
+                catch
+                {
+                }
+            }
+
+            var bitmap = new Bitmap(640, 360, PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(bitmap))
+            using (var brush = new SolidBrush(Color.FromArgb(230, 234, 240)))
+            using (var textBrush = new SolidBrush(Color.FromArgb(65, 75, 92)))
+            using (var font = new Font("Segoe UI", 12, FontStyle.Regular))
+            {
+                g.Clear(Color.White);
+                g.FillRectangle(brush, 0, 0, bitmap.Width, bitmap.Height);
+                g.DrawString("No snip captured yet.", font, textBrush, new PointF(24, 24));
+            }
+            return bitmap;
+        }
+
+#if SDK_RECORDING
+        internal static void OpenEditorRecordTab()
+        {
+            if (editorWindow != null && !editorWindow.IsDisposed)
+            {
+                if (editorWindow.WindowState == FormWindowState.Minimized)
+                {
+                    editorWindow.WindowState = FormWindowState.Normal;
+                }
+                editorWindow.Show();
+                editorWindow.SelectRecordTab();
+                editorWindow.Activate();
+                return;
+            }
+
+            OpenEditorOrBlank();
+
+            if (editorWindow != null && !editorWindow.IsDisposed)
+            {
+                editorWindow.SelectRecordTab();
+                editorWindow.Activate();
+            }
+        }
+#endif
+
         internal static void RefreshOpenEditorHistory()
         {
             if (editorWindow == null || editorWindow.IsDisposed) return;
             editorWindow.RefreshHistoryFromStore();
         }
 
+#if SDK_RECORDING
+        internal static void RefreshOpenEditorRecordings()
+        {
+            if (editorWindow == null || editorWindow.IsDisposed) return;
+            editorWindow.RefreshRecordingsFromStore();
+        }
+
+        internal static void UpdateRecordingAudio(bool systemAudio, bool microphone)
+        {
+            RecordingAudio = new RecordingAudioConfig
+            {
+                SystemAudio = systemAudio,
+                Microphone = microphone
+            };
+            RecordingAudioStore.Save(RecordingAudio);
+        }
+#endif
+
         internal static void SaveLastImage(Bitmap bitmap)
         {
             string dir = HistoryStore.GetHistoryDirectory();
             string path = Path.Combine(dir, "snip-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + ".png");
-            bitmap.Save(path, ImageFormat.Png);
+            bitmap.Save(path, DrawingImageFormat.Png);
             LastImagePath = path;
             HistoryStore.TrimToLicenseLimit();
             RefreshHistoryMenuText();
@@ -335,23 +506,98 @@ namespace SnipCopy
 
         internal static void ShowToast(string title, string text, bool openEditorOnClick)
         {
+            ShowToast(title, text, openEditorOnClick ? ToastAction.OpenEditor : ToastAction.None);
+        }
+
+        private static void ShowToast(string title, string text, ToastAction action)
+        {
             if (TrayIcon == null) return;
-            openEditorToastUntilUtc = openEditorOnClick ? DateTime.UtcNow.AddMinutes(5) : DateTime.MinValue;
+            pendingToastAction = action;
+            toastActionUntilUtc = action == ToastAction.None ? DateTime.MinValue : DateTime.UtcNow.AddMinutes(5);
             TrayIcon.BalloonTipTitle = title;
             TrayIcon.BalloonTipText = text;
             TrayIcon.ShowBalloonTip(1500);
         }
 
+#if SDK_RECORDING
+        internal static void ShowRecordingSavedToast(string path)
+        {
+            ShowToast("Recording saved", Path.GetFileName(path), ToastAction.OpenRecordTab);
+        }
+
+        internal static void ShowRecordingLimitToast()
+        {
+            ShowToast("Free limit reached", "Recording saved. Pro unlocks unlimited recording.", ToastAction.OpenRecordTab);
+        }
+#endif
+
         private static void HandleToastClick()
         {
-            if (DateTime.UtcNow > openEditorToastUntilUtc) return;
-            openEditorToastUntilUtc = DateTime.MinValue;
-            OpenEditor(LastImage);
+            if (DateTime.UtcNow > toastActionUntilUtc) return;
+
+            ToastAction action = pendingToastAction;
+            pendingToastAction = ToastAction.None;
+            toastActionUntilUtc = DateTime.MinValue;
+
+            if (action == ToastAction.OpenEditor)
+            {
+                OpenEditorOrBlank();
+                return;
+            }
+
+#if SDK_RECORDING
+            if (action == ToastAction.OpenRecordTab)
+            {
+                OpenEditorRecordTab();
+            }
+#endif
+        }
+
+        private static bool RegisterConfiguredHotKey(HotkeyWindow window, int id, HotkeySpec shortcut)
+        {
+            if (window == null || shortcut == null || !shortcut.IsValid) return false;
+            return NativeMethods.RegisterHotKey(window.Handle, id, shortcut.Modifiers, (uint)shortcut.Key);
+        }
+
+        private static void UnregisterConfiguredHotkeys()
+        {
+            if (hotkeyWindow != null) NativeMethods.UnregisterHotKey(hotkeyWindow.Handle, SnipHotkeyId);
+            if (editorHotkeyWindow != null) NativeMethods.UnregisterHotKey(editorHotkeyWindow.Handle, EditorHotkeyId);
+#if SDK_RECORDING
+            if (recordHotkeyWindow != null) NativeMethods.UnregisterHotKey(recordHotkeyWindow.Handle, RecordHotkeyId);
+#endif
+        }
+
+        private static bool TryRegisterConfiguredHotkeys(ShortcutConfig config, out string failed)
+        {
+            failed = "";
+            if (!RegisterConfiguredHotKey(hotkeyWindow, SnipHotkeyId, config.Snip))
+            {
+                failed = config.Snip.DisplayText;
+                return false;
+            }
+
+            if (!RegisterConfiguredHotKey(editorHotkeyWindow, EditorHotkeyId, config.Editor))
+            {
+                failed = config.Editor.DisplayText;
+                return false;
+            }
+
+#if SDK_RECORDING
+            if (!RegisterConfiguredHotKey(recordHotkeyWindow, RecordHotkeyId, config.Record))
+            {
+                failed = config.Record.DisplayText;
+                return false;
+            }
+#endif
+
+            return true;
         }
     }
 
     internal static class NativeMethods
     {
+        internal const uint MOD_ALT = 0x0001;
         internal const uint MOD_CONTROL = 0x0002;
         internal const uint MOD_SHIFT = 0x0004;
         internal const int WM_HOTKEY = 0x0312;
@@ -392,14 +638,1115 @@ namespace SnipCopy
         }
     }
 
+    internal sealed class HotkeySpec
+    {
+        public uint Modifiers;
+        public Keys Key;
+
+        public bool IsValid
+        {
+            get { return Modifiers != 0 && Key != Keys.None && !IsModifierKey(Key); }
+        }
+
+        public string DisplayText
+        {
+            get
+            {
+                var parts = new List<string>();
+                if ((Modifiers & NativeMethods.MOD_CONTROL) != 0) parts.Add("Ctrl");
+                if ((Modifiers & NativeMethods.MOD_SHIFT) != 0) parts.Add("Shift");
+                if ((Modifiers & NativeMethods.MOD_ALT) != 0) parts.Add("Alt");
+                parts.Add(KeyText(Key));
+                return String.Join("+", parts.ToArray());
+            }
+        }
+
+        internal HotkeySpec Clone()
+        {
+            return new HotkeySpec { Modifiers = Modifiers, Key = Key };
+        }
+
+        internal static bool TryFromKeyEvent(KeyEventArgs e, out HotkeySpec shortcut, out string message)
+        {
+            uint modifiers = 0;
+            if (e.Control) modifiers |= NativeMethods.MOD_CONTROL;
+            if (e.Shift) modifiers |= NativeMethods.MOD_SHIFT;
+            if (e.Alt) modifiers |= NativeMethods.MOD_ALT;
+
+            shortcut = new HotkeySpec { Modifiers = modifiers, Key = e.KeyCode };
+            if (!shortcut.IsValid)
+            {
+                message = "Press at least one modifier plus a normal key, for example Ctrl+Shift+W.";
+                return false;
+            }
+
+            message = "";
+            return true;
+        }
+
+        internal static bool TryParse(string text, out HotkeySpec shortcut)
+        {
+            shortcut = null;
+            if (String.IsNullOrWhiteSpace(text)) return false;
+
+            uint modifiers = 0;
+            Keys key = Keys.None;
+            string[] parts = text.Split(new[] { '+' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string rawPart in parts)
+            {
+                string part = rawPart.Trim();
+                if (String.Equals(part, "Ctrl", StringComparison.OrdinalIgnoreCase) || String.Equals(part, "Control", StringComparison.OrdinalIgnoreCase))
+                {
+                    modifiers |= NativeMethods.MOD_CONTROL;
+                    continue;
+                }
+
+                if (String.Equals(part, "Shift", StringComparison.OrdinalIgnoreCase))
+                {
+                    modifiers |= NativeMethods.MOD_SHIFT;
+                    continue;
+                }
+
+                if (String.Equals(part, "Alt", StringComparison.OrdinalIgnoreCase))
+                {
+                    modifiers |= NativeMethods.MOD_ALT;
+                    continue;
+                }
+
+                Keys parsed;
+                if (TryParseKey(part, out parsed)) key = parsed;
+            }
+
+            var result = new HotkeySpec { Modifiers = modifiers, Key = key };
+            if (!result.IsValid) return false;
+            shortcut = result;
+            return true;
+        }
+
+        private static bool TryParseKey(string text, out Keys key)
+        {
+            key = Keys.None;
+            if (String.IsNullOrWhiteSpace(text)) return false;
+
+            string part = text.Trim();
+            if (part.Length == 1)
+            {
+                char ch = Char.ToUpperInvariant(part[0]);
+                if (ch >= 'A' && ch <= 'Z')
+                {
+                    key = (Keys)Enum.Parse(typeof(Keys), ch.ToString());
+                    return true;
+                }
+
+                if (ch >= '0' && ch <= '9')
+                {
+                    key = (Keys)Enum.Parse(typeof(Keys), "D" + ch);
+                    return true;
+                }
+            }
+
+            if (String.Equals(part, "Esc", StringComparison.OrdinalIgnoreCase))
+            {
+                key = Keys.Escape;
+                return true;
+            }
+
+            object parsed;
+            try
+            {
+                parsed = Enum.Parse(typeof(Keys), part, true);
+            }
+            catch
+            {
+                return false;
+            }
+
+            key = (Keys)parsed;
+            return !IsModifierKey(key);
+        }
+
+        private static bool IsModifierKey(Keys key)
+        {
+            return key == Keys.ControlKey
+                || key == Keys.ShiftKey
+                || key == Keys.Menu
+                || key == Keys.LControlKey
+                || key == Keys.RControlKey
+                || key == Keys.LShiftKey
+                || key == Keys.RShiftKey
+                || key == Keys.LMenu
+                || key == Keys.RMenu;
+        }
+
+        private static string KeyText(Keys key)
+        {
+            if (key >= Keys.A && key <= Keys.Z) return key.ToString();
+            if (key >= Keys.D0 && key <= Keys.D9) return ((int)(key - Keys.D0)).ToString();
+            if (key == Keys.Escape) return "Esc";
+            return key.ToString();
+        }
+    }
+
+    internal sealed class ShortcutConfig
+    {
+        internal const string SnipAction = "snip";
+        internal const string RecordAction = "record";
+        internal const string EditorAction = "editor";
+
+        public HotkeySpec Snip;
+        public HotkeySpec Record;
+        public HotkeySpec Editor;
+
+        internal static ShortcutConfig Defaults()
+        {
+            HotkeySpec snip;
+            HotkeySpec record;
+            HotkeySpec editor;
+            HotkeySpec.TryParse("Ctrl+Shift+S", out snip);
+            HotkeySpec.TryParse("Ctrl+Shift+R", out record);
+            HotkeySpec.TryParse("Ctrl+E", out editor);
+            return new ShortcutConfig { Snip = snip, Record = record, Editor = editor };
+        }
+
+        internal ShortcutConfig Clone()
+        {
+            return new ShortcutConfig
+            {
+                Snip = Snip == null ? null : Snip.Clone(),
+                Record = Record == null ? null : Record.Clone(),
+                Editor = Editor == null ? null : Editor.Clone()
+            };
+        }
+
+        internal HotkeySpec Get(string action)
+        {
+            if (String.Equals(action, SnipAction, StringComparison.OrdinalIgnoreCase)) return Snip;
+            if (String.Equals(action, RecordAction, StringComparison.OrdinalIgnoreCase)) return Record;
+            if (String.Equals(action, EditorAction, StringComparison.OrdinalIgnoreCase)) return Editor;
+            return null;
+        }
+
+        internal void Set(string action, HotkeySpec shortcut)
+        {
+            if (String.Equals(action, SnipAction, StringComparison.OrdinalIgnoreCase)) Snip = shortcut;
+            if (String.Equals(action, RecordAction, StringComparison.OrdinalIgnoreCase)) Record = shortcut;
+            if (String.Equals(action, EditorAction, StringComparison.OrdinalIgnoreCase)) Editor = shortcut;
+        }
+
+        internal bool Validate(out string message)
+        {
+            if (Snip == null || !Snip.IsValid || Editor == null || !Editor.IsValid || Record == null || !Record.IsValid)
+            {
+                message = "Each shortcut needs at least one modifier plus a normal key.";
+                return false;
+            }
+
+            if (Same(Snip, Editor) || Same(Snip, Record) || Same(Editor, Record))
+            {
+                message = "Each action needs a different shortcut.";
+                return false;
+            }
+
+            message = "";
+            return true;
+        }
+
+        private static bool Same(HotkeySpec a, HotkeySpec b)
+        {
+            if (a == null || b == null) return false;
+            return a.Modifiers == b.Modifiers && a.Key == b.Key;
+        }
+    }
+
+    internal static class ShortcutStore
+    {
+        internal static ShortcutConfig Load()
+        {
+            ShortcutConfig config = ShortcutConfig.Defaults();
+            string path = GetPath();
+            if (!File.Exists(path)) return config;
+
+            try
+            {
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    int equals = line.IndexOf('=');
+                    if (equals <= 0) continue;
+
+                    string action = line.Substring(0, equals).Trim();
+                    string value = line.Substring(equals + 1).Trim();
+                    HotkeySpec shortcut;
+                    if (HotkeySpec.TryParse(value, out shortcut))
+                    {
+                        config.Set(action, shortcut);
+                    }
+                }
+
+                bool migrated = MigrateOldDefaults(config);
+
+                string message;
+                if (!config.Validate(out message)) return ShortcutConfig.Defaults();
+                if (migrated) Save(config);
+                return config;
+            }
+            catch
+            {
+                return ShortcutConfig.Defaults();
+            }
+        }
+
+        internal static void Save(ShortcutConfig config)
+        {
+            string path = GetPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            var lines = new List<string>();
+            lines.Add(ShortcutConfig.SnipAction + "=" + config.Snip.DisplayText);
+            lines.Add(ShortcutConfig.RecordAction + "=" + config.Record.DisplayText);
+            lines.Add(ShortcutConfig.EditorAction + "=" + config.Editor.DisplayText);
+            File.WriteAllLines(path, lines.ToArray());
+        }
+
+        private static bool MigrateOldDefaults(ShortcutConfig config)
+        {
+            bool migrated = false;
+            HotkeySpec oldSnipCtrlS;
+            HotkeySpec oldSnipCtrlC;
+            HotkeySpec oldRecordCtrlR;
+            HotkeySpec.TryParse("Ctrl+S", out oldSnipCtrlS);
+            HotkeySpec.TryParse("Ctrl+C", out oldSnipCtrlC);
+            HotkeySpec.TryParse("Ctrl+R", out oldRecordCtrlR);
+
+            if (Matches(config.Snip, oldSnipCtrlS) || Matches(config.Snip, oldSnipCtrlC))
+            {
+                config.Snip = ShortcutConfig.Defaults().Snip;
+                migrated = true;
+            }
+
+            if (Matches(config.Record, oldRecordCtrlR))
+            {
+                config.Record = ShortcutConfig.Defaults().Record;
+                migrated = true;
+            }
+
+            return migrated;
+        }
+
+        private static bool Matches(HotkeySpec current, HotkeySpec expected)
+        {
+            if (current == null || expected == null) return false;
+            return current.Modifiers == expected.Modifiers && current.Key == expected.Key;
+        }
+
+        private static string GetPath()
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SnipCopy");
+            return Path.Combine(dir, "shortcuts.ini");
+        }
+    }
+
 #if SDK_RECORDING
+    internal sealed class RecordingAudioConfig
+    {
+        public int Version = 2;
+        public bool SystemAudio;
+        public bool Microphone;
+        public bool LoadedFromFile;
+
+        public bool HasAudio
+        {
+            get { return SystemAudio || Microphone; }
+        }
+
+        public string Summary
+        {
+            get
+            {
+                if (SystemAudio && Microphone) return "system audio + microphone";
+                if (SystemAudio) return "system audio";
+                if (Microphone) return "microphone";
+                return "no audio";
+            }
+        }
+
+        internal static RecordingAudioConfig Defaults()
+        {
+            return new RecordingAudioConfig { Version = 2, SystemAudio = true, Microphone = false };
+        }
+    }
+
+    internal static class RecordingAudioStore
+    {
+        internal static RecordingAudioConfig Load()
+        {
+            var config = RecordingAudioConfig.Defaults();
+            string path = GetPath();
+            if (!File.Exists(path)) return config;
+
+            try
+            {
+                bool sawSystemAudio = false;
+                bool sawMicrophone = false;
+                bool sawVersion = false;
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    int equals = line.IndexOf('=');
+                    if (equals <= 0) continue;
+
+                    string key = line.Substring(0, equals).Trim();
+                    string value = line.Substring(equals + 1).Trim();
+                    bool enabled = ParseBoolean(value);
+
+                    if (String.Equals(key, "version", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int version;
+                        if (Int32.TryParse(value, out version)) config.Version = version;
+                        sawVersion = true;
+                    }
+                    else if (String.Equals(key, "system_audio", StringComparison.OrdinalIgnoreCase))
+                    {
+                        config.SystemAudio = enabled;
+                        sawSystemAudio = true;
+                    }
+                    else if (String.Equals(key, "microphone", StringComparison.OrdinalIgnoreCase))
+                    {
+                        config.Microphone = enabled;
+                        sawMicrophone = true;
+                    }
+                }
+
+                config.LoadedFromFile = true;
+
+                if (!sawVersion && sawSystemAudio && sawMicrophone && !config.SystemAudio && !config.Microphone)
+                {
+                    config.SystemAudio = true;
+                    config.Version = 2;
+                    Save(config);
+                }
+                else if (!sawSystemAudio)
+                {
+                    config.SystemAudio = RecordingAudioConfig.Defaults().SystemAudio;
+                    config.Version = 2;
+                    Save(config);
+                }
+                else if (!sawVersion)
+                {
+                    config.Version = 2;
+                    Save(config);
+                }
+            }
+            catch
+            {
+                return RecordingAudioConfig.Defaults();
+            }
+
+            return config;
+        }
+
+        internal static void Save(RecordingAudioConfig config)
+        {
+            if (config == null) config = RecordingAudioConfig.Defaults();
+
+            string path = GetPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            var lines = new List<string>();
+            lines.Add("version=" + config.Version.ToString());
+            lines.Add("system_audio=" + config.SystemAudio.ToString());
+            lines.Add("microphone=" + config.Microphone.ToString());
+            File.WriteAllLines(path, lines.ToArray());
+        }
+
+        private static bool ParseBoolean(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return false;
+            if (String.Equals(value, "1", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(value, "true", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static string GetPath()
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SnipCopy");
+            return Path.Combine(dir, "recording.ini");
+        }
+    }
+
     internal static class RecordingManager
     {
-        internal static void ShowUnavailable(Rectangle region)
+        private static readonly TimeSpan FreeRecordingLimit = TimeSpan.FromMinutes(5);
+        private static Recorder recorder;
+        private static RecordingControlForm controls;
+        private static string recordingPath = "";
+        private static bool recordingStarted;
+        private static bool freeLimitReached;
+        private static bool stopping;
+
+        internal static bool IsRecording
         {
-            string message = "Recording region selected: " + region.Width + " x " + region.Height + "." + Environment.NewLine
-                + "The Windows capture recorder is reserved for the new .NET SDK build so the current image capture stays stable.";
-            MessageBox.Show(message, "SnipCopy Recording", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            get { return recorder != null && recordingStarted && !stopping; }
+        }
+
+        internal static bool HasSession
+        {
+            get { return recorder != null; }
+        }
+
+        internal static void Start(Rectangle region)
+        {
+            if (HasSession)
+            {
+                ShowControls();
+                return;
+            }
+
+            region = NormalizeRegion(region);
+            if (region.Width < 4 || region.Height < 4)
+            {
+                MessageBox.Show("Select a larger area to record.", "SnipCopy Recording", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            Screen screen = FindContainingScreen(region);
+            if (screen == null)
+            {
+                MessageBox.Show("For this first recorder build, select an area that stays inside one monitor.", "SnipCopy Recording", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string folder = RecordingStore.GetRecordingDirectory();
+            Directory.CreateDirectory(folder);
+            recordingPath = Path.Combine(folder, "record-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".mp4");
+            freeLimitReached = false;
+
+            var source = new DisplayRecordingSource(screen.DeviceName);
+            source.RecorderApi = RecorderApi.DesktopDuplication;
+            source.IsCursorCaptureEnabled = true;
+            source.SourceRect = new ScreenRect(
+                region.Left - screen.Bounds.Left,
+                region.Top - screen.Bounds.Top,
+                region.Right - screen.Bounds.Left,
+                region.Bottom - screen.Bounds.Top);
+            source.OutputSize = new ScreenSize(region.Width, region.Height);
+            source.Stretch = StretchMode.None;
+
+            var options = new RecorderOptions();
+            options.SourceOptions = new SourceOptions
+            {
+                RecordingSources = new List<RecordingSourceBase> { source }
+            };
+            options.OutputOptions = new OutputOptions
+            {
+                RecorderMode = RecorderMode.Video,
+                OutputFrameSize = new ScreenSize(region.Width, region.Height),
+                Stretch = StretchMode.None
+            };
+            RecordingAudioConfig audio = Program.RecordingAudio ?? RecordingAudioConfig.Defaults();
+            options.AudioOptions = new AudioOptions
+            {
+                IsAudioEnabled = audio.HasAudio,
+                IsOutputDeviceEnabled = audio.SystemAudio,
+                IsInputDeviceEnabled = audio.Microphone,
+                AudioOutputDevice = "",
+                AudioInputDevice = ""
+            };
+            options.MouseOptions = new MouseOptions
+            {
+                MouseClickDetectionMode = MouseDetectionMode.Polling
+            };
+            options.VideoEncoderOptions = new VideoEncoderOptions
+            {
+                Encoder = new H264VideoEncoder
+                {
+                    EncoderProfile = H264Profile.High,
+                    BitrateMode = H264BitrateControlMode.CBR
+                },
+                Framerate = 30,
+                Bitrate = CalculateBitrate(region),
+                IsHardwareEncodingEnabled = true,
+                IsFixedFramerate = true,
+                IsMp4FastStartEnabled = true
+            };
+
+            try
+            {
+                stopping = false;
+                recordingStarted = false;
+                recorder = Recorder.CreateRecorder(options);
+                recorder.OnRecordingComplete += Recorder_OnRecordingComplete;
+                recorder.OnRecordingFailed += Recorder_OnRecordingFailed;
+                recorder.OnStatusChanged += Recorder_OnStatusChanged;
+
+                TimeSpan recordingLimit = Program.IsPro ? TimeSpan.Zero : FreeRecordingLimit;
+                controls = new RecordingControlForm(region, recordingPath, audio, recordingLimit);
+                controls.StartRequested += delegate { BeginRecording(); };
+                controls.PauseRequested += delegate { TogglePause(); };
+                controls.LimitReached += delegate { StopForFreeLimit(); };
+                controls.StopRequested += delegate { Stop(); };
+                controls.FormClosed += delegate
+                {
+                    if (!recordingStarted && recorder != null)
+                    {
+                        CleanupRecorder();
+                    }
+
+                    if (controls != null && !IsRecording)
+                    {
+                        controls = null;
+                    }
+                };
+                controls.Show();
+
+                try
+                {
+                    Recorder.SetExcludeFromCapture(controls.Handle, true);
+                }
+                catch
+                {
+                }
+            }
+            catch (Exception ex)
+            {
+                CleanupRecorder();
+                SafeCloseControls();
+                MessageBox.Show("Could not prepare recording." + Environment.NewLine + ex.Message, "SnipCopy Recording", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        internal static void BeginRecording()
+        {
+            if (recorder == null || recordingStarted || stopping) return;
+
+            try
+            {
+                recordingStarted = true;
+                if (controls != null) controls.MarkStarting();
+                recorder.Record(recordingPath);
+                if (controls != null) controls.MarkRecording();
+            }
+            catch (Exception ex)
+            {
+                CleanupRecorder();
+                SafeCloseControls();
+                MessageBox.Show("Could not start recording." + Environment.NewLine + ex.Message, "SnipCopy Recording", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        internal static void Stop()
+        {
+            if (recorder == null) return;
+
+            if (!recordingStarted)
+            {
+                CleanupRecorder();
+                stopping = false;
+                recordingPath = "";
+                SafeCloseControls();
+                return;
+            }
+
+            stopping = true;
+            if (controls != null) controls.MarkStopping();
+            try
+            {
+                recorder.Stop();
+            }
+            catch (Exception ex)
+            {
+                Finish("", "Could not stop recording. " + ex.Message);
+            }
+        }
+
+        internal static void StopForFreeLimit()
+        {
+            if (recorder == null || !recordingStarted || stopping) return;
+            freeLimitReached = true;
+            Stop();
+        }
+
+        internal static void TogglePause()
+        {
+            if (recorder == null || !recordingStarted || stopping) return;
+            try
+            {
+                if (recorder.Status == RecorderStatus.Paused)
+                {
+                    recorder.Resume();
+                    if (controls != null) controls.MarkRecording();
+                    return;
+                }
+
+                if (recorder.Status == RecorderStatus.Recording)
+                {
+                    recorder.Pause();
+                    if (controls != null) controls.MarkPaused();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not pause or resume recording." + Environment.NewLine + ex.Message, "SnipCopy Recording", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        internal static void ShowControls()
+        {
+            if (controls == null || controls.IsDisposed) return;
+            controls.Show();
+            if (controls.WindowState == FormWindowState.Minimized)
+            {
+                controls.WindowState = FormWindowState.Normal;
+            }
+            controls.Activate();
+        }
+
+        private static void Recorder_OnRecordingComplete(object sender, RecordingCompleteEventArgs e)
+        {
+            RunOnUiThread(delegate { Finish(String.IsNullOrEmpty(e.FilePath) ? recordingPath : e.FilePath, ""); });
+        }
+
+        private static void Recorder_OnRecordingFailed(object sender, RecordingFailedEventArgs e)
+        {
+            RunOnUiThread(delegate { Finish(e.FilePath, e.Error); });
+        }
+
+        private static void Recorder_OnStatusChanged(object sender, RecordingStatusEventArgs e)
+        {
+            RunOnUiThread(delegate
+            {
+                if (controls != null && !controls.IsDisposed)
+                {
+                    controls.SetRecorderStatus(e.Status.ToString());
+                }
+            });
+        }
+
+        private static void Finish(string path, string error)
+        {
+            CleanupRecorder();
+            stopping = false;
+
+            if (!String.IsNullOrEmpty(error))
+            {
+                if (controls != null && !controls.IsDisposed) controls.MarkFailed(error);
+                Program.ShowToast("Recording failed", error);
+                return;
+            }
+
+            if (String.IsNullOrEmpty(path)) path = recordingPath;
+            if (controls != null && !controls.IsDisposed)
+            {
+                if (freeLimitReached)
+                {
+                    controls.MarkSaved(path, "Saved - Free limit reached");
+                }
+                else
+                {
+                    controls.MarkSaved(path);
+                }
+            }
+            Program.RefreshOpenEditorRecordings();
+            if (freeLimitReached)
+            {
+                Program.ShowRecordingLimitToast();
+            }
+            else
+            {
+                Program.ShowRecordingSavedToast(path);
+            }
+            freeLimitReached = false;
+        }
+
+        private static void CleanupRecorder()
+        {
+            if (recorder == null)
+            {
+                recordingStarted = false;
+                return;
+            }
+            try
+            {
+                recorder.OnRecordingComplete -= Recorder_OnRecordingComplete;
+                recorder.OnRecordingFailed -= Recorder_OnRecordingFailed;
+                recorder.OnStatusChanged -= Recorder_OnStatusChanged;
+                recorder.Dispose();
+            }
+            catch
+            {
+            }
+            recorder = null;
+            recordingStarted = false;
+        }
+
+        private static void SafeCloseControls()
+        {
+            if (controls == null) return;
+            try
+            {
+                if (!controls.IsDisposed)
+                {
+                    controls.AllowClose();
+                    controls.Close();
+                }
+            }
+            catch
+            {
+            }
+            controls = null;
+        }
+
+        private static void RunOnUiThread(Action action)
+        {
+            if (controls != null && !controls.IsDisposed && controls.IsHandleCreated)
+            {
+                controls.BeginInvoke(action);
+                return;
+            }
+            action();
+        }
+
+        private static Screen FindContainingScreen(Rectangle region)
+        {
+            foreach (Screen screen in Screen.AllScreens)
+            {
+                if (screen.Bounds.Contains(region)) return screen;
+            }
+            return null;
+        }
+
+        private static Rectangle NormalizeRegion(Rectangle region)
+        {
+            int width = region.Width - (region.Width % 2);
+            int height = region.Height - (region.Height % 2);
+            return new Rectangle(region.Left, region.Top, width, height);
+        }
+
+        private static int CalculateBitrate(Rectangle region)
+        {
+            int suggested = region.Width * region.Height * 4;
+            if (suggested < 2500000) return 2500000;
+            if (suggested > 12000000) return 12000000;
+            return suggested;
+        }
+    }
+
+    internal sealed class RecordingControlForm : Form
+    {
+        private DateTime startedAtUtc = DateTime.MinValue;
+        private readonly Timer timer;
+        private readonly Label timeLabel;
+        private readonly Label statusLabel;
+        private readonly Label pathLabel;
+        private readonly Button pauseButton;
+        private readonly Button stopButton;
+        private readonly Button folderButton;
+        private readonly string folderPath;
+        private readonly TimeSpan recordingLimit;
+        private string savedPath = "";
+        private TimeSpan pausedTotal = TimeSpan.Zero;
+        private DateTime pausedAtUtc = DateTime.MinValue;
+        private bool hasStarted;
+        private bool timerPaused;
+        private bool limitRaised;
+        private bool canClose;
+
+        internal event EventHandler StartRequested;
+        internal event EventHandler PauseRequested;
+        internal event EventHandler LimitReached;
+        internal event EventHandler StopRequested;
+
+        internal RecordingControlForm(Rectangle region, string path, RecordingAudioConfig audio, TimeSpan recordingLimit)
+        {
+            this.recordingLimit = recordingLimit;
+            folderPath = Path.GetDirectoryName(path);
+            if (String.IsNullOrEmpty(folderPath)) folderPath = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+
+            Text = "SnipCopy Recording";
+            Icon = Program.AppIcon;
+            Width = 360;
+            Height = 168;
+            FormBorderStyle = FormBorderStyle.FixedToolWindow;
+            StartPosition = FormStartPosition.Manual;
+            TopMost = true;
+            ShowInTaskbar = false;
+            BackColor = Color.FromArgb(245, 247, 250);
+            MaximizeBox = false;
+            MinimizeBox = false;
+
+            Screen screen = Screen.FromRectangle(region);
+            Rectangle area = screen.WorkingArea;
+            Left = Math.Max(area.Left + 12, area.Right - Width - 18);
+            Top = Math.Max(area.Top + 12, area.Bottom - Height - 18);
+
+            var title = new Label();
+            title.Text = "Ready to record";
+            title.Font = new Font("Segoe UI", 11, FontStyle.Bold);
+            title.Left = 16;
+            title.Top = 14;
+            title.Width = 160;
+            title.Height = 24;
+            Controls.Add(title);
+
+            timeLabel = new Label();
+            timeLabel.Text = "00:00";
+            timeLabel.Font = new Font("Segoe UI", 18, FontStyle.Bold);
+            timeLabel.TextAlign = ContentAlignment.MiddleRight;
+            timeLabel.Left = 212;
+            timeLabel.Top = 8;
+            timeLabel.Width = 112;
+            timeLabel.Height = 34;
+            Controls.Add(timeLabel);
+
+            statusLabel = new Label();
+            string audioText = audio == null ? "no audio" : audio.Summary;
+            statusLabel.Text = region.Width + " x " + region.Height + " px selected - " + audioText + " - " + LimitText();
+            statusLabel.Font = new Font("Segoe UI", 9);
+            statusLabel.ForeColor = Color.FromArgb(65, 75, 92);
+            statusLabel.Left = 17;
+            statusLabel.Top = 45;
+            statusLabel.Width = 310;
+            statusLabel.Height = 22;
+            Controls.Add(statusLabel);
+
+            pathLabel = new Label();
+            pathLabel.Text = CompactPath(path);
+            pathLabel.Font = new Font("Segoe UI", 8);
+            pathLabel.ForeColor = Color.FromArgb(85, 92, 104);
+            pathLabel.Left = 17;
+            pathLabel.Top = 68;
+            pathLabel.Width = 310;
+            pathLabel.Height = 22;
+            Controls.Add(pathLabel);
+
+            pauseButton = new Button();
+            pauseButton.Text = "Start";
+            pauseButton.Left = 17;
+            pauseButton.Top = 100;
+            pauseButton.Width = 88;
+            pauseButton.Height = 28;
+            pauseButton.Click += delegate
+            {
+                if (!hasStarted)
+                {
+                    if (StartRequested != null) StartRequested(this, EventArgs.Empty);
+                    return;
+                }
+
+                if (PauseRequested != null) PauseRequested(this, EventArgs.Empty);
+            };
+            Controls.Add(pauseButton);
+
+            stopButton = new Button();
+            stopButton.Text = "Cancel";
+            stopButton.Left = 114;
+            stopButton.Top = 100;
+            stopButton.Width = 88;
+            stopButton.Height = 28;
+            stopButton.Click += delegate
+            {
+                if (StopRequested != null) StopRequested(this, EventArgs.Empty);
+            };
+            Controls.Add(stopButton);
+
+            folderButton = new Button();
+            folderButton.Text = "Folder";
+            folderButton.Left = 211;
+            folderButton.Top = 100;
+            folderButton.Width = 100;
+            folderButton.Height = 28;
+            folderButton.Enabled = true;
+            folderButton.Click += delegate { OpenSavedLocation(); };
+            Controls.Add(folderButton);
+
+            timer = new Timer();
+            timer.Interval = 500;
+            timer.Tick += delegate { RefreshTimer(); };
+        }
+
+        internal void SetRecorderStatus(string status)
+        {
+            if (String.IsNullOrEmpty(status)) return;
+            if (String.Equals(status, "Paused", StringComparison.OrdinalIgnoreCase))
+            {
+                MarkPaused();
+                return;
+            }
+
+            if (String.Equals(status, "Recording", StringComparison.OrdinalIgnoreCase))
+            {
+                MarkRecording();
+                return;
+            }
+
+            statusLabel.Text = status;
+        }
+
+        internal void MarkStarting()
+        {
+            pauseButton.Enabled = false;
+            stopButton.Enabled = false;
+            stopButton.Text = "Stop";
+            statusLabel.Text = "Starting...";
+        }
+
+        internal void MarkPaused()
+        {
+            if (!hasStarted) return;
+            if (!timerPaused)
+            {
+                timerPaused = true;
+                pausedAtUtc = DateTime.UtcNow;
+            }
+            pauseButton.Text = "Resume";
+            pauseButton.Enabled = true;
+            stopButton.Enabled = true;
+            statusLabel.Text = "Paused";
+        }
+
+        internal void MarkRecording()
+        {
+            if (!hasStarted)
+            {
+                hasStarted = true;
+                canClose = false;
+                startedAtUtc = DateTime.UtcNow;
+                pausedTotal = TimeSpan.Zero;
+                pausedAtUtc = DateTime.MinValue;
+                timerPaused = false;
+                timer.Start();
+            }
+
+            if (timerPaused)
+            {
+                pausedTotal = pausedTotal.Add(DateTime.UtcNow - pausedAtUtc);
+                timerPaused = false;
+                pausedAtUtc = DateTime.MinValue;
+            }
+            pauseButton.Text = "Pause";
+            pauseButton.Enabled = true;
+            stopButton.Enabled = true;
+            stopButton.Text = "Stop";
+            statusLabel.Text = "Recording";
+        }
+
+        internal void MarkStopping()
+        {
+            if (timerPaused)
+            {
+                pausedTotal = pausedTotal.Add(DateTime.UtcNow - pausedAtUtc);
+                timerPaused = false;
+                pausedAtUtc = DateTime.MinValue;
+            }
+            pauseButton.Enabled = false;
+            stopButton.Enabled = false;
+            folderButton.Enabled = true;
+            statusLabel.Text = "Finishing MP4...";
+        }
+
+        internal void MarkSaved(string path)
+        {
+            MarkSaved(path, "Saved");
+        }
+
+        internal void MarkSaved(string path, string status)
+        {
+            savedPath = path;
+            timer.Stop();
+            canClose = true;
+            pauseButton.Enabled = false;
+            stopButton.Enabled = false;
+            folderButton.Enabled = true;
+            statusLabel.Text = status;
+            pathLabel.Text = CompactPath(path);
+            Activate();
+        }
+
+        internal void MarkFailed(string error)
+        {
+            timer.Stop();
+            canClose = true;
+            pauseButton.Enabled = false;
+            stopButton.Enabled = false;
+            folderButton.Enabled = Directory.Exists(folderPath);
+            statusLabel.Text = "Failed";
+            pathLabel.Text = error;
+            Activate();
+        }
+
+        internal void AllowClose()
+        {
+            canClose = true;
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!hasStarted)
+            {
+                canClose = true;
+            }
+
+            if (!canClose)
+            {
+                e.Cancel = true;
+                WindowState = FormWindowState.Minimized;
+                return;
+            }
+            base.OnFormClosing(e);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            timer.Dispose();
+            base.OnFormClosed(e);
+        }
+
+        private void RefreshTimer()
+        {
+            DateTime effectiveNow = timerPaused ? pausedAtUtc : DateTime.UtcNow;
+            TimeSpan elapsed = effectiveNow - startedAtUtc - pausedTotal;
+            if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+            timeLabel.Text = ((int)elapsed.TotalMinutes).ToString("00") + ":" + elapsed.Seconds.ToString("00");
+
+            if (recordingLimit > TimeSpan.Zero && elapsed >= recordingLimit && !limitRaised)
+            {
+                limitRaised = true;
+                timeLabel.Text = ((int)recordingLimit.TotalMinutes).ToString("00") + ":" + recordingLimit.Seconds.ToString("00");
+                pauseButton.Enabled = false;
+                stopButton.Enabled = false;
+                statusLabel.Text = "Free limit reached. Saving...";
+                if (LimitReached != null) LimitReached(this, EventArgs.Empty);
+            }
+        }
+
+        private string LimitText()
+        {
+            if (recordingLimit <= TimeSpan.Zero) return "Pro unlimited";
+            return "Free limit " + ((int)recordingLimit.TotalMinutes).ToString("0") + ":" + recordingLimit.Seconds.ToString("00");
+        }
+
+        private void OpenSavedLocation()
+        {
+            try
+            {
+                if (!String.IsNullOrEmpty(savedPath) && File.Exists(savedPath))
+                {
+                    Process.Start("explorer.exe", "/select,\"" + savedPath + "\"");
+                    return;
+                }
+
+                if (!String.IsNullOrEmpty(folderPath) && Directory.Exists(folderPath))
+                {
+                    Process.Start("explorer.exe", "\"" + folderPath + "\"");
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static string CompactPath(string path)
+        {
+            if (String.IsNullOrEmpty(path)) return "";
+            if (path.Length <= 45) return path;
+            return "..." + path.Substring(path.Length - 42);
         }
     }
 #endif
@@ -1085,6 +2432,97 @@ namespace SnipCopy
         }
     }
 
+#if SDK_RECORDING
+    internal sealed class RecordingItem
+    {
+        public string Path;
+        public DateTime CreatedAt;
+        public long SizeBytes;
+
+        public string DisplayName
+        {
+            get { return CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"); }
+        }
+
+        public string SizeText
+        {
+            get
+            {
+                double size = SizeBytes;
+                string[] units = { "B", "KB", "MB", "GB" };
+                int unit = 0;
+                while (size >= 1024 && unit < units.Length - 1)
+                {
+                    size /= 1024;
+                    unit++;
+                }
+                return size.ToString(unit == 0 ? "0" : "0.0") + " " + units[unit];
+            }
+        }
+
+        public override string ToString()
+        {
+            return DisplayName;
+        }
+    }
+
+    internal static class RecordingStore
+    {
+        internal static string GetRecordingDirectory()
+        {
+            string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+            if (String.IsNullOrEmpty(videos))
+            {
+                videos = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            }
+
+            string dir = Path.Combine(videos, "SnipCopy");
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+
+        internal static List<RecordingItem> GetItems()
+        {
+            var items = new List<RecordingItem>();
+            string dir = GetRecordingDirectory();
+            foreach (string path in Directory.GetFiles(dir, "*.mp4"))
+            {
+                try
+                {
+                    var file = new FileInfo(path);
+                    items.Add(new RecordingItem
+                    {
+                        Path = path,
+                        CreatedAt = file.CreationTime,
+                        SizeBytes = file.Length
+                    });
+                }
+                catch
+                {
+                }
+            }
+
+            items.Sort(delegate(RecordingItem a, RecordingItem b)
+            {
+                return b.CreatedAt.CompareTo(a.CreatedAt);
+            });
+            return items;
+        }
+
+        internal static void Delete(string path)
+        {
+            try
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch
+            {
+                throw;
+            }
+        }
+    }
+#endif
+
     internal sealed class CaptureOverlay : Form
     {
         internal static bool IsOpen;
@@ -1108,6 +2546,14 @@ namespace SnipCopy
             KeyPreview = true;
             DoubleBuffered = true;
             BackgroundImage = screenshot;
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            BringToFront();
+            Activate();
+            Focus();
         }
 
         internal Rectangle SelectedScreenBounds
@@ -1176,9 +2622,31 @@ namespace SnipCopy
         {
             if (e.KeyCode == Keys.Escape)
             {
-                DialogResult = DialogResult.Cancel;
-                Close();
+                CancelSelection();
+                e.SuppressKeyPress = true;
             }
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape)
+            {
+                CancelSelection();
+                return true;
+            }
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        protected override bool ProcessDialogKey(Keys keyData)
+        {
+            if (keyData == Keys.Escape)
+            {
+                CancelSelection();
+                return true;
+            }
+
+            return base.ProcessDialogKey(keyData);
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -1186,6 +2654,15 @@ namespace SnipCopy
             IsOpen = false;
             screenshot.Dispose();
             base.OnFormClosed(e);
+        }
+
+        private void CancelSelection()
+        {
+            selecting = false;
+            selection = Rectangle.Empty;
+            selectedScreenBounds = Rectangle.Empty;
+            DialogResult = DialogResult.Cancel;
+            Close();
         }
 
         private static Rectangle Normalize(Point a, Point b)
@@ -1211,6 +2688,20 @@ namespace SnipCopy
     internal sealed class EditorForm : Form
     {
         private readonly TabControl tabs;
+#if SDK_RECORDING
+        private TabPage recordTab;
+        private ListBox recordingList;
+        private Label recordingStatus;
+        private Label recordingPreviewTitle;
+        private Label recordingPreviewMeta;
+        private Label recordingPreviewPath;
+        private Button recordingPreviewPlayButton;
+        private Label recordShortcutLabel;
+        private Label recordingLimitLabel;
+        private CheckBox recordSystemAudioCheck;
+        private CheckBox recordMicrophoneCheck;
+        private List<RecordingItem> recordingItems = new List<RecordingItem>();
+#endif
         private readonly Panel scroll;
         private readonly PictureBox canvas;
         private ListBox historyList;
@@ -1223,6 +2714,11 @@ namespace SnipCopy
         private readonly List<Bitmap> undo = new List<Bitmap>();
         private readonly List<Bitmap> redo = new List<Bitmap>();
         private readonly List<Button> proButtons = new List<Button>();
+        private Label snipShortcutValue;
+#if SDK_RECORDING
+        private Label recordShortcutValue;
+#endif
+        private Label editorShortcutValue;
         private Label editorLicenseValue;
         private Button colorButton;
         private ToolTip toolbarTip;
@@ -1241,7 +2737,8 @@ namespace SnipCopy
             Icon = Program.AppIcon;
             int maxWidth = Screen.PrimaryScreen.WorkingArea.Width - 80;
             int maxHeight = Screen.PrimaryScreen.WorkingArea.Height - 80;
-            Width = Math.Min(maxWidth, Math.Max(720, image.Width + 48));
+            int preferredWidth = Math.Max(756, (int)Math.Ceiling((image.Width + 48) * 1.05));
+            Width = Math.Min(maxWidth, preferredWidth);
             Height = Math.Min(maxHeight, Math.Max(520, image.Height + 104));
             MinimumSize = new Size(620, 420);
             StartPosition = FormStartPosition.CenterScreen;
@@ -1257,15 +2754,19 @@ namespace SnipCopy
             editPage.BackColor = Color.FromArgb(245, 247, 250);
             tabs.TabPages.Add(editPage);
 
-#if SDK_RECORDING
-            var recordPage = new TabPage("Record");
-            recordPage.BackColor = Color.FromArgb(245, 247, 250);
-            tabs.TabPages.Add(recordPage);
-#endif
-
             var historyPage = new TabPage("History");
             historyPage.BackColor = Color.FromArgb(245, 247, 250);
             tabs.TabPages.Add(historyPage);
+
+#if SDK_RECORDING
+            recordTab = new TabPage("Record");
+            recordTab.BackColor = Color.FromArgb(245, 247, 250);
+            tabs.TabPages.Add(recordTab);
+#endif
+
+            var shortcutsPage = new TabPage("Shortcuts");
+            shortcutsPage.BackColor = Color.FromArgb(245, 247, 250);
+            tabs.TabPages.Add(shortcutsPage);
 
             var settingsPage = new TabPage("Settings");
             settingsPage.BackColor = Color.FromArgb(245, 247, 250);
@@ -1285,13 +2786,13 @@ namespace SnipCopy
             {
                 toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12.5f));
             }
-            editPage.Controls.Add(toolbar);
 
             scroll = new Panel();
             scroll.Dock = DockStyle.Fill;
             scroll.AutoScroll = true;
             scroll.BackColor = Color.FromArgb(230, 234, 240);
             editPage.Controls.Add(scroll);
+            editPage.Controls.Add(toolbar);
 
             canvas = new PictureBox();
             canvas.Left = 16;
@@ -1320,11 +2821,16 @@ namespace SnipCopy
             toolbarTip.SetToolTip(redoButton, "Redo (Ctrl+Y)");
             toolbar.Controls.Add(redoButton, 5, 0);
             toolbar.Controls.Add(MakeToolbarButton("Copy", delegate { CopyCurrent(); }), 6, 0);
-            toolbar.Controls.Add(MakeToolbarButton("Save", delegate { SaveCurrent(); }), 7, 0);
-            AddProButton(toolbar, "Blur", 0);
-            AddProButton(toolbar, "Redact", 2);
-            AddProButton(toolbar, "Steps", 4);
-            AddResetButton(toolbar, 6);
+            var saveButton = MakeToolbarButton("Save", delegate { SaveCurrent(); });
+            StyleToolbarAccent(saveButton, Color.FromArgb(224, 247, 232), Color.FromArgb(78, 154, 98));
+            toolbar.Controls.Add(saveButton, 7, 0);
+            Button captureButton = AddFreeToolButton(toolbar, "Capture", 0, delegate { CaptureFromEditor(); });
+            AddFreeToolButton(toolbar, "Crop", 1, delegate { tool = "Crop"; tabs.SelectedIndex = 0; });
+            StyleToolbarAccent(captureButton, Color.FromArgb(224, 241, 255), Color.FromArgb(74, 145, 210));
+            AddProButton(toolbar, "Blur", 2, 2);
+            AddProButton(toolbar, "Redact", 4, 2);
+            AddProButton(toolbar, "Steps", 6, 1);
+            AddResetButton(toolbar, 7, 1);
 
             original = new Bitmap(image);
             working = new Bitmap(image);
@@ -1336,8 +2842,9 @@ namespace SnipCopy
 
             BuildHistoryTab(historyPage);
 #if SDK_RECORDING
-            BuildRecordTab(recordPage);
+            BuildRecordTab(recordTab);
 #endif
+            BuildShortcutsTab(shortcutsPage);
             BuildSettingsTab(settingsPage);
             RefreshEditorHistory();
             RefreshLicenseState();
@@ -1362,6 +2869,17 @@ namespace SnipCopy
             base.OnKeyDown(e);
         }
 
+#if SDK_RECORDING
+        internal void SelectRecordTab()
+        {
+            if (recordTab != null)
+            {
+                RefreshRecordingsFromStore();
+                tabs.SelectedTab = recordTab;
+            }
+        }
+#endif
+
         private static Button MakeToolbarButton(string text, EventHandler click)
         {
             var button = new Button();
@@ -1373,14 +2891,32 @@ namespace SnipCopy
             return button;
         }
 
-        private void AddProButton(TableLayoutPanel toolbar, string feature, int column)
+        private static void StyleToolbarAccent(Button button, Color background, Color border)
+        {
+            button.UseVisualStyleBackColor = false;
+            button.BackColor = background;
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderColor = border;
+            button.FlatAppearance.MouseOverBackColor = ControlPaint.Light(background);
+            button.FlatAppearance.MouseDownBackColor = ControlPaint.Dark(background);
+        }
+
+        private Button AddFreeToolButton(TableLayoutPanel toolbar, string text, int column, EventHandler click)
+        {
+            var button = MakeToolbarButton(text, click);
+            toolbarTip.SetToolTip(button, text == "Capture" ? "Take a new snip" : "Crop the current snip");
+            toolbar.Controls.Add(button, column, 1);
+            return button;
+        }
+
+        private void AddProButton(TableLayoutPanel toolbar, string feature, int column, int span)
         {
             var button = MakeToolbarButton(feature + " Pro", delegate { SelectProTool(feature); });
             button.Tag = feature;
             button.UseVisualStyleBackColor = false;
             proButtons.Add(button);
             toolbar.Controls.Add(button, column, 1);
-            toolbar.SetColumnSpan(button, 2);
+            toolbar.SetColumnSpan(button, span);
             RefreshProButton(button);
         }
 
@@ -1404,14 +2940,19 @@ namespace SnipCopy
             {
                 editorLicenseValue.Text = Program.License == null ? "Free" : Program.License.StatusText;
             }
+
+#if SDK_RECORDING
+            RefreshRecordingLimitLabel();
+#endif
         }
 
-        private void AddResetButton(TableLayoutPanel toolbar, int column)
+        private void AddResetButton(TableLayoutPanel toolbar, int column, int span)
         {
             var button = MakeToolbarButton("Reset", delegate { ResetImage(); });
+            StyleToolbarAccent(button, Color.FromArgb(255, 232, 232), Color.FromArgb(210, 106, 106));
             toolbarTip.SetToolTip(button, "Reset this edit back to the original snip");
             toolbar.Controls.Add(button, column, 1);
-            toolbar.SetColumnSpan(button, 2);
+            toolbar.SetColumnSpan(button, span);
         }
 
         private void SelectProTool(string feature)
@@ -1428,6 +2969,37 @@ namespace SnipCopy
                 Program.ShowSettings();
                 RefreshLicenseState();
             }
+        }
+
+        private void CaptureFromEditor()
+        {
+            WindowState = FormWindowState.Minimized;
+
+            var timer = new Timer();
+            timer.Interval = 150;
+            timer.Tick += delegate
+            {
+                timer.Stop();
+                timer.Dispose();
+
+                bool previousOpenEditorAfterSnip = Program.OpenEditorAfterSnip;
+                Program.OpenEditorAfterSnip = true;
+                try
+                {
+                    Program.StartSnip();
+                }
+                finally
+                {
+                    Program.OpenEditorAfterSnip = previousOpenEditorAfterSnip;
+                    if (!IsDisposed && WindowState == FormWindowState.Minimized)
+                    {
+                        WindowState = FormWindowState.Normal;
+                        Show();
+                        Activate();
+                    }
+                }
+            };
+            timer.Start();
         }
 
         private void BuildHistoryTab(TabPage page)
@@ -1478,6 +3050,235 @@ namespace SnipCopy
 #if SDK_RECORDING
         private void BuildRecordTab(TabPage page)
         {
+            var layout = new TableLayoutPanel();
+            layout.Dock = DockStyle.Fill;
+            layout.Padding = new Padding(10);
+            layout.ColumnCount = 2;
+            layout.RowCount = 3;
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+            page.Controls.Add(layout);
+
+            var header = new Panel();
+            header.Dock = DockStyle.Fill;
+            header.BackColor = Color.FromArgb(245, 247, 250);
+            layout.Controls.Add(header, 0, 0);
+            layout.SetColumnSpan(header, 2);
+
+            var title = new Label();
+            title.Text = "Region Recording";
+            title.Font = new Font("Segoe UI", 18, FontStyle.Bold);
+            title.Left = 12;
+            title.Top = 10;
+            title.Width = 420;
+            title.Height = 38;
+            header.Controls.Add(title);
+
+            var description = new Label();
+            description.Text = "Select an area to record. Finished MP4s appear here.";
+            description.Font = new Font("Segoe UI", 10);
+            description.ForeColor = Color.FromArgb(45, 57, 76);
+            description.Left = 14;
+            description.Top = 52;
+            description.Width = 620;
+            description.Height = 26;
+            header.Controls.Add(description);
+
+            var startButton = MakeSettingsTabButton("Record Area", 14, 88, delegate { Program.StartRecordingSelection(); });
+            startButton.Width = 140;
+            header.Controls.Add(startButton);
+
+            recordShortcutLabel = new Label();
+            recordShortcutLabel.Text = "Shortcut: " + Program.Shortcuts.Record.DisplayText;
+            recordShortcutLabel.Font = new Font("Segoe UI", 9);
+            recordShortcutLabel.ForeColor = Color.FromArgb(85, 92, 104);
+            recordShortcutLabel.Left = 169;
+            recordShortcutLabel.Top = 86;
+            recordShortcutLabel.Width = 172;
+            recordShortcutLabel.Height = 24;
+            header.Controls.Add(recordShortcutLabel);
+
+            RecordingAudioConfig audio = Program.RecordingAudio ?? RecordingAudioConfig.Defaults();
+
+            recordSystemAudioCheck = new CheckBox();
+            recordSystemAudioCheck.Text = "System audio";
+            recordSystemAudioCheck.Checked = audio.SystemAudio;
+            recordSystemAudioCheck.Font = new Font("Segoe UI", 9);
+            recordSystemAudioCheck.ForeColor = Color.FromArgb(45, 57, 76);
+            recordSystemAudioCheck.Left = 350;
+            recordSystemAudioCheck.Top = 84;
+            recordSystemAudioCheck.Width = 118;
+            recordSystemAudioCheck.Height = 24;
+            recordSystemAudioCheck.CheckedChanged += delegate { SaveRecordingAudioFromChecks(); };
+            header.Controls.Add(recordSystemAudioCheck);
+
+            recordMicrophoneCheck = new CheckBox();
+            recordMicrophoneCheck.Text = "Microphone";
+            recordMicrophoneCheck.Checked = audio.Microphone;
+            recordMicrophoneCheck.Font = new Font("Segoe UI", 9);
+            recordMicrophoneCheck.ForeColor = Color.FromArgb(45, 57, 76);
+            recordMicrophoneCheck.Left = 475;
+            recordMicrophoneCheck.Top = 84;
+            recordMicrophoneCheck.Width = 112;
+            recordMicrophoneCheck.Height = 24;
+            recordMicrophoneCheck.CheckedChanged += delegate { SaveRecordingAudioFromChecks(); };
+            header.Controls.Add(recordMicrophoneCheck);
+
+            recordingLimitLabel = new Label();
+            recordingLimitLabel.Text = RecordingLimitText();
+            recordingLimitLabel.Font = new Font("Segoe UI", 8);
+            recordingLimitLabel.ForeColor = Color.FromArgb(85, 92, 104);
+            recordingLimitLabel.Left = 169;
+            recordingLimitLabel.Top = 110;
+            recordingLimitLabel.Width = 460;
+            recordingLimitLabel.Height = 18;
+            header.Controls.Add(recordingLimitLabel);
+
+            recordingList = new ListBox();
+            recordingList.Dock = DockStyle.Fill;
+            recordingList.Font = new Font("Segoe UI", 9);
+            recordingList.SelectedIndexChanged += delegate { RefreshRecordingDetails(); };
+            layout.Controls.Add(recordingList, 0, 1);
+
+            var details = new Panel();
+            details.Dock = DockStyle.Fill;
+            details.BackColor = Color.White;
+            details.BorderStyle = BorderStyle.FixedSingle;
+            layout.Controls.Add(details, 1, 1);
+
+            var detailsLayout = new TableLayoutPanel();
+            detailsLayout.Dock = DockStyle.Fill;
+            detailsLayout.Padding = new Padding(18);
+            detailsLayout.ColumnCount = 1;
+            detailsLayout.RowCount = 4;
+            detailsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            detailsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            detailsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            detailsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+            details.Controls.Add(detailsLayout);
+
+            recordingPreviewTitle = new Label();
+            recordingPreviewTitle.Dock = DockStyle.Fill;
+            recordingPreviewTitle.Font = new Font("Segoe UI", 15, FontStyle.Bold);
+            recordingPreviewTitle.ForeColor = Color.FromArgb(18, 30, 52);
+            recordingPreviewTitle.Text = "No recording selected";
+            recordingPreviewTitle.TextAlign = ContentAlignment.MiddleLeft;
+            recordingPreviewTitle.AutoEllipsis = true;
+            detailsLayout.Controls.Add(recordingPreviewTitle, 0, 0);
+
+            var previewSurface = new Panel();
+            previewSurface.Dock = DockStyle.Fill;
+            previewSurface.BackColor = Color.White;
+            previewSurface.BorderStyle = BorderStyle.None;
+            previewSurface.Margin = new Padding(0, 8, 0, 10);
+            detailsLayout.Controls.Add(previewSurface, 0, 1);
+
+            recordingPreviewPlayButton = new Button();
+            recordingPreviewPlayButton.Text = "Play Recording";
+            recordingPreviewPlayButton.Width = 176;
+            recordingPreviewPlayButton.Height = 44;
+            recordingPreviewPlayButton.Font = new Font("Segoe UI", 11, FontStyle.Bold);
+            recordingPreviewPlayButton.FlatStyle = FlatStyle.Flat;
+            recordingPreviewPlayButton.BackColor = Color.White;
+            recordingPreviewPlayButton.FlatAppearance.BorderColor = Color.FromArgb(154, 172, 198);
+            recordingPreviewPlayButton.Click += delegate { PlayRecordingSelected(); };
+            previewSurface.Controls.Add(recordingPreviewPlayButton);
+            previewSurface.Resize += delegate { CenterRecordingPreviewButton(previewSurface); };
+            CenterRecordingPreviewButton(previewSurface);
+
+            recordingPreviewMeta = new Label();
+            recordingPreviewMeta.Dock = DockStyle.Fill;
+            recordingPreviewMeta.Font = new Font("Segoe UI", 10);
+            recordingPreviewMeta.ForeColor = Color.FromArgb(45, 57, 76);
+            recordingPreviewMeta.TextAlign = ContentAlignment.MiddleLeft;
+            recordingPreviewMeta.AutoEllipsis = true;
+            detailsLayout.Controls.Add(recordingPreviewMeta, 0, 2);
+
+            recordingPreviewPath = new Label();
+            recordingPreviewPath.Dock = DockStyle.Fill;
+            recordingPreviewPath.Font = new Font("Segoe UI", 9);
+            recordingPreviewPath.ForeColor = Color.FromArgb(85, 92, 104);
+            recordingPreviewPath.AutoEllipsis = true;
+            detailsLayout.Controls.Add(recordingPreviewPath, 0, 3);
+
+            recordingStatus = new Label();
+            recordingStatus.Dock = DockStyle.Fill;
+            recordingStatus.Font = new Font("Segoe UI", 9);
+            recordingStatus.Padding = new Padding(0, 8, 8, 0);
+            layout.Controls.Add(recordingStatus, 0, 2);
+
+            var actions = new FlowLayoutPanel();
+            actions.Dock = DockStyle.Fill;
+            actions.FlowDirection = FlowDirection.LeftToRight;
+            actions.WrapContents = false;
+            actions.Padding = new Padding(0, 10, 0, 0);
+            layout.Controls.Add(actions, 1, 2);
+
+            actions.Controls.Add(MakeHistoryButton("Play", delegate { PlayRecordingSelected(); }));
+            actions.Controls.Add(MakeHistoryButton("Open Folder", delegate { OpenRecordingFolderSelected(); }));
+            actions.Controls.Add(MakeHistoryButton("Copy Path", delegate { CopyRecordingPathSelected(); }));
+            actions.Controls.Add(MakeHistoryButton("Delete", delegate { DeleteRecordingSelected(); }));
+
+            RefreshRecordingHistory();
+        }
+
+        private static void CenterRecordingPreviewButton(Panel previewSurface)
+        {
+            if (previewSurface == null || previewSurface.Controls.Count == 0) return;
+
+            Control button = previewSurface.Controls[0];
+            button.Left = Math.Max(12, (previewSurface.ClientSize.Width - button.Width) / 2);
+            button.Top = Math.Max(12, (previewSurface.ClientSize.Height - button.Height) / 2);
+        }
+
+        private void SaveRecordingAudioFromChecks()
+        {
+            if (recordSystemAudioCheck == null || recordMicrophoneCheck == null) return;
+            Program.UpdateRecordingAudio(recordSystemAudioCheck.Checked, recordMicrophoneCheck.Checked);
+        }
+
+        private void RefreshRecordingLimitLabel()
+        {
+            if (recordingLimitLabel == null) return;
+            recordingLimitLabel.Text = RecordingLimitText();
+        }
+
+        private static string RecordingLimitText()
+        {
+            return Program.IsPro ? "Recording limit: unlimited with Pro" : "Free recording limit: 5:00. Pro unlocks unlimited recording.";
+        }
+
+        private static Label AddRecordingDetail(Panel panel, string labelText, int top)
+        {
+            var label = new Label();
+            label.Text = labelText;
+            label.Font = new Font("Segoe UI", 8, FontStyle.Bold);
+            label.ForeColor = Color.FromArgb(85, 92, 104);
+            label.Left = 16;
+            label.Top = top;
+            label.Width = 90;
+            label.Height = 18;
+            panel.Controls.Add(label);
+
+            var value = new Label();
+            value.Text = "";
+            value.Font = new Font("Segoe UI", 10);
+            value.ForeColor = Color.FromArgb(18, 30, 52);
+            value.Left = 16;
+            value.Top = top + 18;
+            value.Width = 620;
+            value.Height = labelText == "Path" ? 48 : 24;
+            value.AutoEllipsis = true;
+            panel.Controls.Add(value);
+            return value;
+        }
+#endif
+
+        private void BuildShortcutsTab(TabPage page)
+        {
             var panel = new Panel();
             panel.Dock = DockStyle.Fill;
             panel.BackColor = Color.FromArgb(245, 247, 250);
@@ -1485,7 +3286,7 @@ namespace SnipCopy
             page.Controls.Add(panel);
 
             var title = new Label();
-            title.Text = "Region Recording";
+            title.Text = "Shortcuts";
             title.Font = new Font("Segoe UI", 18, FontStyle.Bold);
             title.Left = 21;
             title.Top = 24;
@@ -1493,41 +3294,147 @@ namespace SnipCopy
             title.Height = 38;
             panel.Controls.Add(title);
 
-            var description = new Label();
-            description.Text = "Select a screen area for recording. This is separate from screenshot editing and does not change image Pro tools.";
-            description.Font = new Font("Segoe UI", 10);
-            description.ForeColor = Color.FromArgb(45, 57, 76);
-            description.Left = 23;
-            description.Top = 72;
-            description.Width = 620;
-            description.Height = 42;
-            panel.Controls.Add(description);
+            var grid = new TableLayoutPanel();
+            grid.Left = 23;
+            grid.Top = 82;
+            grid.Width = 660;
+            grid.AutoSize = true;
+            grid.ColumnCount = 3;
+            grid.RowCount = 0;
+            grid.CellBorderStyle = TableLayoutPanelCellBorderStyle.Single;
+            grid.BackColor = Color.FromArgb(225, 230, 238);
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.Controls.Add(grid);
 
-            var startButton = MakeSettingsTabButton("Record Area", 23, 128, delegate { Program.StartRecordingSelection(); });
-            startButton.Width = 140;
-            panel.Controls.Add(startButton);
-
-            var shortcut = new Label();
-            shortcut.Text = "Shortcut: Ctrl+Shift+R";
-            shortcut.Font = new Font("Segoe UI", 9);
-            shortcut.ForeColor = Color.FromArgb(85, 92, 104);
-            shortcut.Left = 178;
-            shortcut.Top = 134;
-            shortcut.Width = 260;
-            shortcut.Height = 24;
-            panel.Controls.Add(shortcut);
-
-            var status = new Label();
-            status.Text = "Windows capture recording will be implemented in the SDK build path. Current builds keep screenshot capture stable.";
-            status.Font = new Font("Segoe UI", 9);
-            status.ForeColor = Color.FromArgb(85, 92, 104);
-            status.Left = 23;
-            status.Top = 184;
-            status.Width = 660;
-            status.Height = 44;
-            panel.Controls.Add(status);
-        }
+            snipShortcutValue = AddShortcutRow(grid, "New snip", ShortcutConfig.SnipAction);
+#if SDK_RECORDING
+            recordShortcutValue = AddShortcutRow(grid, "Record area", ShortcutConfig.RecordAction);
 #endif
+            editorShortcutValue = AddShortcutRow(grid, "Open editor", ShortcutConfig.EditorAction);
+            AddShortcutInfoRow(grid, "Undo editor change", "Ctrl+Z");
+            AddShortcutInfoRow(grid, "Redo editor change", "Ctrl+Y");
+            AddShortcutInfoRow(grid, "Cancel area selection", "Esc");
+
+            var reset = MakeSettingsTabButton("Reset Defaults", 23, 338, delegate { ResetShortcuts(); });
+            reset.Width = 140;
+            panel.Controls.Add(reset);
+
+            RefreshShortcutState();
+        }
+
+        private Label AddShortcutRow(TableLayoutPanel grid, string actionText, string action)
+        {
+            int row = grid.RowCount;
+            grid.RowCount++;
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+
+            var actionLabel = new Label();
+            actionLabel.Text = actionText;
+            actionLabel.Dock = DockStyle.Fill;
+            actionLabel.TextAlign = ContentAlignment.MiddleLeft;
+            actionLabel.Font = new Font("Segoe UI", 10);
+            actionLabel.BackColor = Color.White;
+            actionLabel.Padding = new Padding(12, 0, 8, 0);
+            grid.Controls.Add(actionLabel, 0, row);
+
+            var keyLabel = new Label();
+            keyLabel.Dock = DockStyle.Fill;
+            keyLabel.TextAlign = ContentAlignment.MiddleLeft;
+            keyLabel.Font = new Font("Consolas", 10, FontStyle.Bold);
+            keyLabel.BackColor = Color.White;
+            keyLabel.Padding = new Padding(12, 0, 8, 0);
+            grid.Controls.Add(keyLabel, 1, row);
+
+            var changeButton = new Button();
+            changeButton.Text = "Change";
+            changeButton.Dock = DockStyle.Fill;
+            changeButton.Margin = new Padding(8, 4, 8, 4);
+            changeButton.Tag = action;
+            changeButton.Click += delegate { ChangeShortcut(action); };
+            grid.Controls.Add(changeButton, 2, row);
+            return keyLabel;
+        }
+
+        private static void AddShortcutInfoRow(TableLayoutPanel grid, string actionText, string keys)
+        {
+            int row = grid.RowCount;
+            grid.RowCount++;
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+
+            var actionLabel = new Label();
+            actionLabel.Text = actionText;
+            actionLabel.Dock = DockStyle.Fill;
+            actionLabel.TextAlign = ContentAlignment.MiddleLeft;
+            actionLabel.Font = new Font("Segoe UI", 10);
+            actionLabel.BackColor = Color.White;
+            actionLabel.Padding = new Padding(12, 0, 8, 0);
+            grid.Controls.Add(actionLabel, 0, row);
+
+            var keyLabel = new Label();
+            keyLabel.Text = keys;
+            keyLabel.Dock = DockStyle.Fill;
+            keyLabel.TextAlign = ContentAlignment.MiddleLeft;
+            keyLabel.Font = new Font("Consolas", 10, FontStyle.Bold);
+            keyLabel.BackColor = Color.White;
+            keyLabel.Padding = new Padding(12, 0, 8, 0);
+            grid.Controls.Add(keyLabel, 1, row);
+
+            var locked = new Label();
+            locked.Text = "Built in";
+            locked.Dock = DockStyle.Fill;
+            locked.TextAlign = ContentAlignment.MiddleLeft;
+            locked.Font = new Font("Segoe UI", 9);
+            locked.ForeColor = Color.FromArgb(85, 92, 104);
+            locked.BackColor = Color.White;
+            locked.Padding = new Padding(12, 0, 8, 0);
+            grid.Controls.Add(locked, 2, row);
+        }
+
+        internal void RefreshShortcutState()
+        {
+            if (Program.Shortcuts == null) Program.Shortcuts = ShortcutStore.Load();
+            if (snipShortcutValue != null) snipShortcutValue.Text = Program.Shortcuts.Snip.DisplayText;
+#if SDK_RECORDING
+            if (recordShortcutValue != null) recordShortcutValue.Text = Program.Shortcuts.Record.DisplayText;
+            if (recordShortcutLabel != null) recordShortcutLabel.Text = "Shortcut: " + Program.Shortcuts.Record.DisplayText;
+#endif
+            if (editorShortcutValue != null) editorShortcutValue.Text = Program.Shortcuts.Editor.DisplayText;
+        }
+
+        private void ChangeShortcut(string action)
+        {
+            ShortcutConfig config = Program.Shortcuts == null ? ShortcutConfig.Defaults() : Program.Shortcuts.Clone();
+            HotkeySpec current = config.Get(action);
+            using (var capture = new HotkeyCaptureForm(current))
+            {
+                if (capture.ShowDialog(this) != DialogResult.OK) return;
+                config.Set(action, capture.Shortcut);
+            }
+
+            string message;
+            if (Program.UpdateShortcuts(config, out message))
+            {
+                MessageBox.Show(this, message, "SnipCopy", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            MessageBox.Show(this, message, "SnipCopy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            RefreshShortcutState();
+        }
+
+        private void ResetShortcuts()
+        {
+            string message;
+            if (Program.UpdateShortcuts(ShortcutConfig.Defaults(), out message))
+            {
+                MessageBox.Show(this, "Default shortcuts restored.", "SnipCopy", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            MessageBox.Show(this, message, "SnipCopy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
 
         private void BuildSettingsTab(TabPage page)
         {
@@ -1759,6 +3666,17 @@ namespace SnipCopy
                 }
                 SetCanvasImage();
             }
+            else if (tool == "Crop")
+            {
+                Rectangle rect = ClipToCanvas(Normalize(start, e.Location));
+                if (preview != null) preview.Dispose();
+                preview = new Bitmap(working);
+                using (Graphics g = Graphics.FromImage(preview))
+                {
+                    DrawSelectionPreview(g, rect, "Crop");
+                }
+                SetCanvasImage();
+            }
         }
 
         private void CanvasMouseUp(object sender, MouseEventArgs e)
@@ -1821,6 +3739,27 @@ namespace SnipCopy
 
                 PushUndo();
                 ApplyBlur(working, rect);
+                ClearPreview();
+                SetCanvasImage();
+            }
+            else if (tool == "Crop")
+            {
+                Rectangle rect = ClipToCanvas(Normalize(start, e.Location));
+                if (rect.Width < 3 || rect.Height < 3)
+                {
+                    ClearPreview();
+                    return;
+                }
+
+                PushUndo();
+                var cropped = new Bitmap(rect.Width, rect.Height, PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(cropped))
+                {
+                    g.DrawImage(working, new Rectangle(0, 0, cropped.Width, cropped.Height), rect, GraphicsUnit.Pixel);
+                }
+
+                working.Dispose();
+                working = cropped;
                 ClearPreview();
                 SetCanvasImage();
             }
@@ -2033,7 +3972,7 @@ namespace SnipCopy
                 dialog.FileName = "snip.png";
                 if (dialog.ShowDialog(this) == DialogResult.OK)
                 {
-                    working.Save(dialog.FileName, ImageFormat.Png);
+                    working.Save(dialog.FileName, DrawingImageFormat.Png);
                 }
             }
         }
@@ -2190,6 +4129,155 @@ namespace SnipCopy
             RefreshEditorHistory();
         }
 
+#if SDK_RECORDING
+        internal void RefreshRecordingsFromStore()
+        {
+            RefreshRecordingHistory();
+        }
+
+        private void RefreshRecordingHistory()
+        {
+            if (recordingList == null) return;
+
+            string selectedPath = null;
+            RecordingItem selected = SelectedRecordingItem;
+            if (selected != null) selectedPath = selected.Path;
+
+            recordingItems = RecordingStore.GetItems();
+            recordingList.BeginUpdate();
+            recordingList.Items.Clear();
+            foreach (RecordingItem item in recordingItems)
+            {
+                recordingList.Items.Add(item.DisplayName);
+            }
+            recordingList.EndUpdate();
+
+            if (recordingItems.Count == 0)
+            {
+                RefreshRecordingDetails();
+                return;
+            }
+
+            int selectedIndex = 0;
+            if (!String.IsNullOrEmpty(selectedPath))
+            {
+                for (int i = 0; i < recordingItems.Count; i++)
+                {
+                    if (String.Equals(recordingItems[i].Path, selectedPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            recordingList.SelectedIndex = selectedIndex;
+        }
+
+        private RecordingItem SelectedRecordingItem
+        {
+            get
+            {
+                if (recordingList == null) return null;
+                if (recordingList.SelectedIndex < 0 || recordingList.SelectedIndex >= recordingItems.Count) return null;
+                return recordingItems[recordingList.SelectedIndex];
+            }
+        }
+
+        private void RefreshRecordingDetails()
+        {
+            RecordingItem item = SelectedRecordingItem;
+            if (item == null)
+            {
+                if (recordingStatus != null) recordingStatus.Text = "No recordings yet.";
+                if (recordingPreviewTitle != null) recordingPreviewTitle.Text = "No recording selected";
+                if (recordingPreviewMeta != null) recordingPreviewMeta.Text = "Record an area to create an MP4 preview here.";
+                if (recordingPreviewPath != null) recordingPreviewPath.Text = "";
+                if (recordingPreviewPlayButton != null) recordingPreviewPlayButton.Enabled = false;
+                return;
+            }
+
+            if (recordingStatus != null) recordingStatus.Text = recordingItems.Count + " recording" + (recordingItems.Count == 1 ? "" : "s");
+            if (recordingPreviewTitle != null) recordingPreviewTitle.Text = Path.GetFileName(item.Path);
+            if (recordingPreviewMeta != null) recordingPreviewMeta.Text = item.SizeText + " - " + item.DisplayName;
+            if (recordingPreviewPath != null) recordingPreviewPath.Text = item.Path;
+            if (recordingPreviewPlayButton != null) recordingPreviewPlayButton.Enabled = true;
+        }
+
+        private void PlayRecordingSelected()
+        {
+            RecordingItem item = SelectedRecordingItem;
+            if (item == null) return;
+
+            try
+            {
+                OpenWithShell(item.Path);
+            }
+            catch
+            {
+                MessageBox.Show(this, "Could not open this recording.", "SnipCopy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void OpenRecordingFolderSelected()
+        {
+            RecordingItem item = SelectedRecordingItem;
+            string folder = item == null ? RecordingStore.GetRecordingDirectory() : Path.GetDirectoryName(item.Path);
+            if (String.IsNullOrEmpty(folder)) return;
+
+            try
+            {
+                if (item != null && File.Exists(item.Path))
+                {
+                    Process.Start("explorer.exe", "/select,\"" + item.Path + "\"");
+                    return;
+                }
+
+                Process.Start("explorer.exe", "\"" + folder + "\"");
+            }
+            catch
+            {
+            }
+        }
+
+        private void CopyRecordingPathSelected()
+        {
+            RecordingItem item = SelectedRecordingItem;
+            if (item == null) return;
+
+            Clipboard.SetText(item.Path);
+            Program.ShowToast("Copied", "Recording path copied to clipboard");
+        }
+
+        private void DeleteRecordingSelected()
+        {
+            RecordingItem item = SelectedRecordingItem;
+            if (item == null) return;
+
+            if (MessageBox.Show(this, "Delete this recording?", "SnipCopy", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            {
+                return;
+            }
+
+            try
+            {
+                RecordingStore.Delete(item.Path);
+                RefreshRecordingHistory();
+            }
+            catch
+            {
+                MessageBox.Show(this, "Could not delete this recording. It may still be open.", "SnipCopy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private static void OpenWithShell(string path)
+        {
+            var info = new ProcessStartInfo();
+            info.FileName = path;
+            info.UseShellExecute = true;
+            Process.Start(info);
+        }
+#endif
+
         internal void LoadImage(Bitmap image)
         {
             if (preview != null)
@@ -2224,7 +4312,10 @@ namespace SnipCopy
         private void SetCanvasImage()
         {
             if (canvas.Image != null) canvas.Image.Dispose();
-            canvas.Image = new Bitmap(preview ?? working);
+            Bitmap source = preview ?? working;
+            canvas.Width = source.Width;
+            canvas.Height = source.Height;
+            canvas.Image = new Bitmap(source);
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -2238,6 +4329,107 @@ namespace SnipCopy
             if (original != null) original.Dispose();
             working.Dispose();
             base.OnFormClosed(e);
+        }
+    }
+
+    internal sealed class HotkeyCaptureForm : Form
+    {
+        private readonly Label valueLabel;
+        private readonly Label messageLabel;
+        private readonly Button okButton;
+        internal HotkeySpec Shortcut;
+
+        internal HotkeyCaptureForm(HotkeySpec current)
+        {
+            Shortcut = current == null ? null : current.Clone();
+            Text = "Change Shortcut";
+            Icon = Program.AppIcon;
+            Width = 420;
+            Height = 178;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MinimizeBox = false;
+            MaximizeBox = false;
+            KeyPreview = true;
+
+            var label = new Label();
+            label.Text = "Press the shortcut you want to use.";
+            label.Left = 16;
+            label.Top = 16;
+            label.Width = 360;
+            label.Height = 22;
+            Controls.Add(label);
+
+            valueLabel = new Label();
+            valueLabel.Text = Shortcut == null ? "" : Shortcut.DisplayText;
+            valueLabel.Left = 16;
+            valueLabel.Top = 44;
+            valueLabel.Width = 368;
+            valueLabel.Height = 30;
+            valueLabel.Font = new Font("Consolas", 14, FontStyle.Bold);
+            valueLabel.BorderStyle = BorderStyle.FixedSingle;
+            valueLabel.TextAlign = ContentAlignment.MiddleCenter;
+            valueLabel.BackColor = Color.White;
+            Controls.Add(valueLabel);
+
+            messageLabel = new Label();
+            messageLabel.Text = "Use Ctrl, Shift, or Alt plus a normal key.";
+            messageLabel.Left = 16;
+            messageLabel.Top = 82;
+            messageLabel.Width = 368;
+            messageLabel.Height = 22;
+            messageLabel.ForeColor = Color.FromArgb(85, 92, 104);
+            Controls.Add(messageLabel);
+
+            okButton = new Button();
+            okButton.Text = "Save";
+            okButton.Left = 228;
+            okButton.Top = 112;
+            okButton.Width = 75;
+            okButton.DialogResult = DialogResult.OK;
+            okButton.Enabled = Shortcut != null && Shortcut.IsValid;
+            Controls.Add(okButton);
+
+            var cancel = new Button();
+            cancel.Text = "Cancel";
+            cancel.Left = 309;
+            cancel.Top = 112;
+            cancel.Width = 75;
+            cancel.DialogResult = DialogResult.Cancel;
+            Controls.Add(cancel);
+
+            AcceptButton = okButton;
+            CancelButton = cancel;
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Escape)
+            {
+                DialogResult = DialogResult.Cancel;
+                Close();
+                return;
+            }
+
+            HotkeySpec shortcut;
+            string message;
+            if (HotkeySpec.TryFromKeyEvent(e, out shortcut, out message))
+            {
+                Shortcut = shortcut;
+                valueLabel.Text = shortcut.DisplayText;
+                messageLabel.Text = "Ready to save.";
+                messageLabel.ForeColor = Color.FromArgb(27, 120, 80);
+                okButton.Enabled = true;
+            }
+            else if (e.KeyCode != Keys.Escape)
+            {
+                messageLabel.Text = message;
+                messageLabel.ForeColor = Color.FromArgb(170, 72, 35);
+                okButton.Enabled = false;
+            }
+
+            e.SuppressKeyPress = true;
+            base.OnKeyDown(e);
         }
     }
 

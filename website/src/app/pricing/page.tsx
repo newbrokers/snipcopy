@@ -20,7 +20,11 @@ export default function PricingPage() {
               <ul className="list">{product.freeFeatures.map((item) => <li key={item}>{item}</li>)}</ul>
               <h3>Pro yearly</h3>
               <ul className="list">{product.proFeatures.map((item) => <li key={item}>{item}</li>)}</ul>
-              <CheckoutButton productSlug={product.slug} productName={product.name} />
+              {product.downloadHref ? (
+                <CheckoutButton productSlug={product.slug} productName={product.name} />
+              ) : (
+                <div className="notice">Coming soon. Pricing is prepared, but this app is not packaged yet.</div>
+              )}
             </article>
           ))}
         </div>

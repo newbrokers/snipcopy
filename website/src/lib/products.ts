@@ -37,17 +37,18 @@ export const PRODUCTS: Record<ProductSlug, Product> = {
     slug: "draw-overlay",
     name: "Draw Overlay",
     headline: "Draw over any screen while presenting or recording.",
-    description: "Keep lightweight annotation controls above your desktop for calls, demos, and training videos.",
+    description: "Keep a movable annotation toolbar above your desktop for calls, demos, lessons, and training videos.",
     imageSrc: "/images/products/draw-overlay.png",
     priceEnvKey: "STRIPE_DRAW_OVERLAY_PRO_PRICE_ID",
-    freeFeatures: ["Basic pen overlay", "Clear screen", "Simple color picker"],
-    proFeatures: ["Persistent tool presets", "Shapes and arrows", "Screen-region spotlight", "Saved annotation profiles", "Priority updates"]
+    downloadHref: "/downloads/DrawOverlay.zip",
+    freeFeatures: ["Pen overlay", "Highlighter and eraser", "Movable toolbar", "Custom color and width"],
+    proFeatures: ["Line tool", "Arrow tool", "Rectangle and ellipse tools", "Text overlay", "Priority updates"]
   },
   "audio-crop": {
     slug: "audio-crop",
     name: "Audio Crop",
     headline: "Trim audio clips quickly without opening a full editor.",
-    description: "Drop in a recording, cut the useful part, export clean clips, and keep repetitive audio cleanup simple.",
+    description: "A planned SavedCode audio utility for trimming recordings, exporting clean clips, and speeding up repetitive audio cleanup.",
     imageSrc: "/images/products/audio-crop.png",
     priceEnvKey: "STRIPE_AUDIO_CROP_PRO_PRICE_ID",
     freeFeatures: ["Open common audio files", "Basic trim", "Export one clip"],
